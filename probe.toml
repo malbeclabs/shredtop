@@ -1,0 +1,23 @@
+# shredtop configuration
+
+# DoubleZero bebop feed
+[[sources]]
+name = "bebop"
+type = "shred"
+multicast_addr = "233.84.178.1"
+port = 20001
+interface = "doublezero1"
+
+# DoubleZero jito-shredstream feed (Jito relay)
+[[sources]]
+name = "jito-shredstream"
+type = "shred"
+multicast_addr = "233.84.178.2"
+port = 20001
+interface = "doublezero1"
+
+# RPC baseline — adjust URL to your local RPC node
+[[sources]]
+name = "rpc"
+type = "rpc"
+url = "http://127.0.0.1:8899"

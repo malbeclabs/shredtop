@@ -1,0 +1,10 @@
+/target/
+Cargo.lock
+
+# Local / sensitive — do not commit
+.env
+.env.*
+*.pem
+*.key
+credentials*
+*.secret

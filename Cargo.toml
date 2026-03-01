@@ -1,0 +1,91 @@
+[workspace]
+resolver = "2"
+members = [
+    ".",
+    "crates/shred-ingest",
+]
+
+[workspace.package]
+version = "1.2.0"
+edition = "2021"
+rust-version = "1.81"
+
+[workspace.dependencies]
+# Solana — decomposed crates pinned to Agave 3.1.x
+solana-pubkey = "3.0"
+solana-transaction = "3.1"
+solana-commitment-config = "3.1"
+solana-entry = "3.1"
+solana-transaction-status = "3.1"
+solana-client = "3.1"
+
+# gRPC Geyser / Jito ShredStream
+yellowstone-grpc-proto = "12"
+tonic = "0.14"
+tonic-prost = "0.14"
+futures-util = "0.3"
+prost = { version = "0.14", features = ["derive"] }
+
+# Async / networking
+socket2 = "0.5"
+tokio = { version = "1", features = ["rt", "time"] }
+
+# Solana helpers needed for gRPC source construction
+solana-signature = "3"
+solana-message = "3"
+
+# Concurrency
+crossbeam-channel = "0.5"
+dashmap = "6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+bincode = "1.3"
+
+# Reed-Solomon erasure coding
+reed-solomon-erasure = { version = "6", features = ["std"] }
+
+# Misc
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libc = "0.2"
+clap = { version = "4", features = ["derive"] }
+chrono = "0.4"
+pcap-file = "2"
+
+# ─── Binary crate ────────────────────────────────────────────────────────────
+
+[package]
+name = "shredtop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Solana shred feed latency benchmark — measure your edge before the block lands"
+license = "MIT"
+
+[[bin]]
+name = "shredtop"
+path = "src/main.rs"
+
+[dependencies]
+shred-ingest = { path = "crates/shred-ingest" }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+crossbeam-channel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+clap = { workspace = true }
+chrono = { workspace = true }
+libc = { workspace = true }
+pcap-file = { workspace = true }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true

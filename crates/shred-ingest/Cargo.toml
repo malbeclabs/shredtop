@@ -1,0 +1,29 @@
+[package]
+name = "shred-ingest"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+solana-pubkey = { workspace = true }
+solana-transaction = { workspace = true }
+solana-commitment-config = { workspace = true }
+solana-entry = { workspace = true }
+solana-client = { workspace = true }
+solana-transaction-status = { workspace = true }
+solana-signature = { workspace = true }
+solana-message = { workspace = true }
+crossbeam-channel = { workspace = true }
+socket2 = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+libc = { workspace = true }
+bincode = { workspace = true }
+dashmap = { workspace = true }
+reed-solomon-erasure = { workspace = true }
+yellowstone-grpc-proto = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
