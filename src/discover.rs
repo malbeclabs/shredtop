@@ -240,15 +240,21 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
     // -----------------------------------------------------------------------
     // RPC baseline
     // -----------------------------------------------------------------------
-    // Check if an rpc/geyser baseline already exists (either in what we're
-    // writing or in the existing config).
-    let has_baseline_already = sources_to_write
+    // Check if an rpc/geyser baseline already exists in what we're writing.
+    let baseline_in_new = sources_to_write
         .iter()
-        .any(|s| matches!(s.source_type.as_str(), "rpc" | "geyser" | "jito-grpc"))
-        || config
-            .sources
-            .iter()
-            .any(|s| matches!(s.source_type.as_str(), "rpc" | "geyser" | "jito-grpc"));
+        .any(|s| matches!(s.source_type.as_str(), "rpc" | "geyser" | "jito-grpc"));
+
+    // Carry over any existing baseline sources from the original config so
+    // they are not silently dropped when the wizard skips the baseline step.
+    let existing_baselines: Vec<SourceEntry> = config
+        .sources
+        .iter()
+        .filter(|s| matches!(s.source_type.as_str(), "rpc" | "geyser" | "jito-grpc"))
+        .cloned()
+        .collect();
+
+    let has_baseline_already = baseline_in_new || !existing_baselines.is_empty();
 
     if !has_baseline_already {
         println!();
@@ -322,6 +328,17 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
     // Capture configuration
     // -----------------------------------------------------------------------
     let capture_cfg = configure_capture();
+
+    // -----------------------------------------------------------------------
+    // Preserve existing baseline sources
+    // -----------------------------------------------------------------------
+    // If the wizard skipped the baseline prompt because one already existed in
+    // probe.toml, carry those entries forward so they are not dropped.
+    if !baseline_in_new {
+        for src in existing_baselines {
+            sources_to_write.push(src);
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Write probe.toml

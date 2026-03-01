@@ -129,6 +129,89 @@ impl TxSource for ShredTxSource {
 }
 
 // ---------------------------------------------------------------------------
+// TurbineTxSource
+// ---------------------------------------------------------------------------
+
+/// Receives shreds from the Solana turbine retransmit tree via SO_REUSEPORT.
+///
+/// Binds `0.0.0.0:tvu_port` with `SO_REUSEPORT` so shredtop can coexist with
+/// a running validator on the same port. Turbine shreds come from many retransmit
+/// nodes, so the kernel distributes traffic across both sockets by per-flow hash.
+///
+/// Use this as a baseline to measure how many milliseconds faster a premium shred
+/// feed (bebop, jito-shredstream) delivers each shred vs standard turbine propagation.
+pub struct TurbineTxSource {
+    /// Display name (e.g. "turbine")
+    pub name: &'static str,
+    /// TVU port the validator listens on (default 8002)
+    pub port: u16,
+    pub pin_recv_core: Option<usize>,
+    pub pin_decode_core: Option<usize>,
+    pub shred_version: Option<u16>,
+    pub capture_tx: Option<crossbeam_channel::Sender<CaptureEvent>>,
+}
+
+impl TxSource for TurbineTxSource {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn is_rpc(&self) -> bool {
+        false
+    }
+
+    fn start(
+        self: Box<Self>,
+        tx: Sender<DecodedTx>,
+        metrics: Arc<SourceMetrics>,
+        race: Option<Arc<ShredRaceTracker>>,
+    ) -> Vec<JoinHandle<()>> {
+        let (shred_tx, shred_rx) = crossbeam_channel::bounded(4096);
+
+        let port = self.port;
+        let shred_version = self.shred_version;
+        let recv_metrics = metrics.clone();
+        let pin_recv = self.pin_recv_core;
+        let name = self.name;
+        let race_tx = race.as_ref().map(|r| r.sender());
+        let capture_tx = self.capture_tx.clone();
+
+        let recv_handle = std::thread::Builder::new()
+            .name(format!("{}-recv", name))
+            .spawn(move || {
+                if let Some(core) = pin_recv {
+                    pin_to_core(core);
+                }
+                let mut receiver = crate::receiver::ShredReceiver::new_unicast(
+                    port,
+                    shred_tx,
+                    recv_metrics,
+                    shred_version,
+                    race_tx,
+                    capture_tx,
+                )
+                .expect("failed to create turbine receiver");
+                receiver.run().expect("turbine receiver crashed");
+            })
+            .expect("failed to spawn turbine recv thread");
+
+        let pin_decode = self.pin_decode_core;
+        let decode_handle = std::thread::Builder::new()
+            .name(format!("{}-decode", name))
+            .spawn(move || {
+                if let Some(core) = pin_decode {
+                    pin_to_core(core);
+                }
+                let decoder = crate::decoder::ShredDecoder::new(shred_rx, tx, metrics);
+                decoder.run().expect("turbine decoder crashed");
+            })
+            .expect("failed to spawn turbine decode thread");
+
+        vec![recv_handle, decode_handle]
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RpcTxSource
 // ---------------------------------------------------------------------------
 

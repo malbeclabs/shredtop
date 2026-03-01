@@ -114,7 +114,7 @@ flowchart LR
 **RECOMENDED Build from source (requires Rust 1.81+):**
 
 ```bash
-git clone https://github.com/malbeclabs/shredtop.git ~/shredtop
+git clone https://github.com/Haruko-Haruhara-GSPB/shredtop.git ~/shredtop
 cargo install --path ~/shredtop
 ```
 
@@ -123,10 +123,10 @@ cargo install --path ~/shredtop
 shredtop upgrade --source
 ```
 
-**Pre-built binary:**
+**Pre-built binary (recommended):**
 
 ```bash
-curl -fsSL https://github.com/malbeclabs/shredtop/releases/latest/download/shredtop -o /usr/local/bin/shredtop && chmod +x /usr/local/bin/shredtop
+curl -fsSL https://github.com/Haruko-Haruhara-GSPB/shredtop/releases/latest/download/shredtop -o /usr/local/bin/shredtop && chmod +x /usr/local/bin/shredtop
 ```
 
 
@@ -181,6 +181,15 @@ name = "rpc"
 type = "rpc"
 url = "http://127.0.0.1:8899"
 
+# Turbine baseline — validator node only
+# Receives shreds from the standard turbine retransmit tree via SO_REUSEPORT.
+# Coexists with a running validator on the same TVU port.
+# Use this to measure premium feed lead time vs standard network propagation.
+# [[sources]]
+# name = "turbine"
+# type = "turbine"
+# port = 8002   # match your validator's --tvu-port (default 8002)
+
 # Yellowstone gRPC Geyser baseline (alternative to RPC polling)
 # [[sources]]
 # name = "geyser"
@@ -200,6 +209,7 @@ url = "http://127.0.0.1:8899"
 | `type` | Description |
 |--------|-------------|
 | `shred` | Raw UDP multicast shred feed (DoubleZero or Jito ShredStream relay). Requires `multicast_addr`, `port`, `interface`. |
+| `turbine` | Solana turbine retransmit tree. Binds the validator's TVU port with `SO_REUSEPORT` to coexist with a running validator. No multicast join required. Use this on a validator node to measure how many milliseconds faster a premium feed delivers each shred vs standard network propagation. Requires `port` (default `8002`). The lead time observed depends on which validator client is running — stock Agave delivers shreds via standard gossip, while accelerated validator forks deliver shreds via a faster path. shredtop captures whatever arrives at the TVU port; the number reflects the fork. |
 | `rpc` | Confirmed-block polling via standard Solana JSON-RPC. Requires `url`. |
 | `geyser` | Confirmed transactions via Yellowstone gRPC (Triton, Helius, QuickNode, etc.). Requires `url`; `x_token` is optional. Acts as RPC baseline. |
 | `jito-grpc` | Decoded entries from a local [Jito ShredStream proxy](https://github.com/jito-labs/shredstream-proxy). Requires `url` (e.g. `http://127.0.0.1:9999`). The proxy handles Jito auth; this client needs no credentials. Arrives before block confirmation — shows lead time vs. RPC baseline. |

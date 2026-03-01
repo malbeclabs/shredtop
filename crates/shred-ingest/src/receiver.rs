@@ -164,6 +164,89 @@ impl ShredReceiver {
         })
     }
 
+    /// Bind to a unicast UDP port with SO_REUSEPORT.
+    ///
+    /// Used for the `turbine` source type: binds `0.0.0.0:port` and sets
+    /// `SO_REUSEPORT` so the socket can coexist with a running validator's TVU
+    /// socket on the same port. Turbine shreds arrive from many different
+    /// retransmit nodes (varied src IPs), so the kernel's per-flow hash
+    /// distributes them across both sockets — shredtop receives a representative
+    /// sample with accurate kernel timestamps, sufficient for lead-time measurement.
+    pub fn new_unicast(
+        port: u16,
+        tx: Sender<RawShred>,
+        metrics: Arc<SourceMetrics>,
+        shred_version: Option<u16>,
+        race_tx: Option<Sender<ShredArrival>>,
+        capture_tx: Option<Sender<CaptureEvent>>,
+    ) -> Result<Self> {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_reuse_address(true)?;
+
+        // SO_REUSEPORT allows sharing this port with the validator's TVU socket.
+        // Unlike the multicast case (where all shreds come from one relay IP),
+        // turbine shreds originate from many retransmit nodes, so the per-flow
+        // hash distributes traffic across sockets rather than sending all packets
+        // to a single socket. Set via libc directly — socket2 0.5 requires a
+        // feature flag for set_reuse_port().
+        #[cfg(target_os = "linux")]
+        {
+            use std::mem::size_of;
+            use std::os::unix::io::AsRawFd;
+            let fd = socket.as_raw_fd();
+            unsafe {
+                let one: libc::c_int = 1;
+                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT,
+                    &one as *const _ as _, size_of::<libc::c_int>() as _);
+            }
+        }
+
+        let bind_addr = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port);
+        socket.bind(&bind_addr.into())?;
+        // No multicast group join — turbine shreds are unicast to the validator's IP.
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::mem::size_of;
+            use std::os::unix::io::AsRawFd;
+            let fd = socket.as_raw_fd();
+            unsafe {
+                let val: libc::c_int = 50;
+                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_BUSY_POLL,
+                    &val as *const _ as _, size_of::<libc::c_int>() as _);
+
+                const RECV_BUF: usize = 32 * 1024 * 1024;
+                let buf_val = RECV_BUF as libc::c_int;
+                let force_ok = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUFFORCE,
+                    &buf_val as *const _ as _, size_of::<libc::c_int>() as _) == 0;
+                if !force_ok {
+                    socket.set_recv_buffer_size(RECV_BUF).ok();
+                }
+
+                let one: libc::c_int = 1;
+                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_TIMESTAMPNS,
+                    &one as *const _ as _, size_of::<libc::c_int>() as _);
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        socket.set_recv_buffer_size(4 * 1024 * 1024)?;
+
+        let rt_to_mono_offset_ns = sample_rt_to_mono_offset_ns();
+
+        Ok(Self {
+            socket,
+            tx,
+            metrics,
+            shred_version,
+            rt_to_mono_offset_ns,
+            race_tx,
+            capture_tx,
+            dst_ip: [0, 0, 0, 0],
+            dst_port: port,
+        })
+    }
+
     /// Main receive loop — should run on a pinned, isolated core.
     pub fn run(&mut self) -> Result<()> {
         tracing::info!("shred receiver started");

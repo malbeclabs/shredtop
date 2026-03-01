@@ -12,7 +12,7 @@ pub mod source_metrics;
 
 pub use coverage::SlotCoverageEvent;
 pub use decoder::{DecodedTx, ShredDecoder};
-pub use fan_in::{FanInSource, RpcTxSource, ShredTxSource, TxSource};
+pub use fan_in::{FanInSource, RpcTxSource, ShredTxSource, TurbineTxSource, TxSource};
 pub use geyser_source::GeyserTxSource;
 pub use jito_source::JitoShredstreamSource;
 pub use receiver::{CaptureEvent, ShredReceiver};

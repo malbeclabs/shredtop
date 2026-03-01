@@ -7,7 +7,7 @@
 use anyhow::Result;
 use chrono::{TimeZone, Utc};
 use libc;
-use shred_ingest::{GeyserTxSource, JitoShredstreamSource, RpcTxSource, ShredTxSource, SourceMetrics};
+use shred_ingest::{GeyserTxSource, JitoShredstreamSource, RpcTxSource, ShredTxSource, TurbineTxSource, SourceMetrics};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -455,6 +455,17 @@ pub fn build_source(
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("source '{}': missing url for jito-grpc source", name))?;
             Box::new(JitoShredstreamSource { name, url })
+        }
+        "turbine" => {
+            let port = entry.port.unwrap_or(8002);
+            Box::new(TurbineTxSource {
+                name,
+                port,
+                pin_recv_core: entry.pin_recv_core,
+                pin_decode_core: entry.pin_decode_core,
+                shred_version: entry.shred_version,
+                capture_tx,
+            })
         }
         other => {
             anyhow::bail!("unknown source_type '{}' for source '{}'", other, name);

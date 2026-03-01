@@ -74,7 +74,7 @@ impl Default for CaptureConfig {
 pub struct SourceEntry {
     /// Human-readable name shown in the dashboard (e.g. "bebop", "jito-shredstream", "rpc")
     pub name: String,
-    /// Source type: "shred" or "rpc"
+    /// Source type: "shred", "turbine", "rpc", "geyser", or "jito-grpc"
     #[serde(rename = "type")]
     pub source_type: String,
     /// Multicast group IP (shred only)
