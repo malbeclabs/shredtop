@@ -19,14 +19,14 @@ pub fn run() -> Result<()> {
 
     let latest = fetch_latest_release();
     match &latest {
-        Some(tag) => println!("{}", tag),
-        None => {
-            println!("(could not reach GitHub)");
+        Ok(tag) => println!("{}", tag),
+        Err(e) => {
+            println!("({})", e);
             return Ok(());
         }
     }
 
-    let tag = latest.unwrap();
+    let tag = latest.unwrap(); // safe: matched Ok above
     if tag == format!("v{}", current) {
         println!("{}", color::green("Already up to date."));
         return Ok(());
@@ -134,30 +134,35 @@ fn which_shredtop() -> Result<std::path::PathBuf> {
 
 /// Query the GitHub releases API and return the tag name of the latest release.
 /// Falls back to `git ls-remote --tags` if api.github.com is unreachable.
-fn fetch_latest_release() -> Option<String> {
-    // Primary: GitHub releases API (requires api.github.com)
-    if let Some(tag) = fetch_via_api() {
-        return Some(tag);
-    }
-    // Fallback: git ls-remote (requires only github.com HTTPS, different subdomain)
-    fetch_via_git_ls_remote()
+fn fetch_latest_release() -> Result<String, String> {
+    fetch_via_api().or_else(|_| fetch_via_git_ls_remote())
 }
 
-fn fetch_via_api() -> Option<String> {
+fn fetch_via_api() -> Result<String, String> {
     let output = Command::new("curl")
         .args(["-sf", "--max-time", "10", "-H", "User-Agent: shredtop", RELEASES_API])
         .output()
-        .ok()?;
+        .map_err(|_| "curl not found".to_string())?;
 
-    if !output.status.success() || output.stdout.is_empty() {
-        return None;
+    if output.stdout.is_empty() || !output.status.success() {
+        // HTTP 404 = no releases published yet; other failures = network error
+        let status = output.status.code().unwrap_or(0);
+        if status == 22 {
+            // curl exit 22 = HTTP 4xx/5xx (with -f flag)
+            return Err("no release published yet".to_string());
+        }
+        return Err("could not reach GitHub".to_string());
     }
 
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    json.get("tag_name")?.as_str().map(str::to_string)
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|_| "unexpected response from GitHub API".to_string())?;
+    json.get("tag_name")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "no tag_name in GitHub API response".to_string())
 }
 
-fn fetch_via_git_ls_remote() -> Option<String> {
+fn fetch_via_git_ls_remote() -> Result<String, String> {
     let output = Command::new("git")
         .args([
             "ls-remote",
@@ -167,21 +172,23 @@ fn fetch_via_git_ls_remote() -> Option<String> {
             "v*",
         ])
         .output()
-        .ok()?;
+        .map_err(|_| "git not found".to_string())?;
 
-    if !output.status.success() || output.stdout.is_empty() {
-        return None;
+    if !output.status.success() {
+        return Err("could not reach GitHub".to_string());
     }
 
     // Output lines: "<sha>\trefs/tags/<tag>"  (or "<sha>\trefs/tags/<tag>^{}")
-    // Pick the first line that does NOT end with "^{}" (peeled tag object)
-    let text = std::str::from_utf8(&output.stdout).ok()?;
+    // Pick the first non-peeled tag (no "^{}" suffix)
+    let text = std::str::from_utf8(&output.stdout)
+        .map_err(|_| "invalid utf8 from git ls-remote".to_string())?;
     for line in text.lines() {
         if line.ends_with("^{}") {
             continue;
         }
-        let tag = line.split('\t').nth(1)?.strip_prefix("refs/tags/")?;
-        return Some(tag.to_string());
+        if let Some(tag) = line.split('\t').nth(1).and_then(|r| r.strip_prefix("refs/tags/")) {
+            return Ok(tag.to_string());
+        }
     }
-    None
+    Err("no releases published yet".to_string())
 }
