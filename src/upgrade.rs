@@ -133,7 +133,17 @@ fn which_shredtop() -> Result<std::path::PathBuf> {
 }
 
 /// Query the GitHub releases API and return the tag name of the latest release.
+/// Falls back to `git ls-remote --tags` if api.github.com is unreachable.
 fn fetch_latest_release() -> Option<String> {
+    // Primary: GitHub releases API (requires api.github.com)
+    if let Some(tag) = fetch_via_api() {
+        return Some(tag);
+    }
+    // Fallback: git ls-remote (requires only github.com HTTPS, different subdomain)
+    fetch_via_git_ls_remote()
+}
+
+fn fetch_via_api() -> Option<String> {
     let output = Command::new("curl")
         .args(["-sf", "--max-time", "10", "-H", "User-Agent: shredtop", RELEASES_API])
         .output()
@@ -145,4 +155,33 @@ fn fetch_latest_release() -> Option<String> {
 
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     json.get("tag_name")?.as_str().map(str::to_string)
+}
+
+fn fetch_via_git_ls_remote() -> Option<String> {
+    let output = Command::new("git")
+        .args([
+            "ls-remote",
+            "--tags",
+            "--sort=-version:refname",
+            "https://github.com/malbeclabs/shredtop.git",
+            "v*",
+        ])
+        .output()
+        .ok()?;
+
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+
+    // Output lines: "<sha>\trefs/tags/<tag>"  (or "<sha>\trefs/tags/<tag>^{}")
+    // Pick the first line that does NOT end with "^{}" (peeled tag object)
+    let text = std::str::from_utf8(&output.stdout).ok()?;
+    for line in text.lines() {
+        if line.ends_with("^{}") {
+            continue;
+        }
+        let tag = line.split('\t').nth(1)?.strip_prefix("refs/tags/")?;
+        return Some(tag.to_string());
+    }
+    None
 }
