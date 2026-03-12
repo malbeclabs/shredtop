@@ -348,6 +348,7 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
             sources: sources_to_write,
             filter_programs: Vec::new(),
             capture: capture_cfg,
+            metrics: crate::config::MetricsConfig::default(),
         };
         let toml_str = toml::to_string_pretty(&cfg)?;
         std::fs::write(config_path, toml_str)?;
