@@ -120,7 +120,7 @@ impl ShredReceiver {
 
                 // SO_RCVBUFFORCE: bypasses net.core.rmem_max (requires root).
                 // Falls back to SO_RCVBUF with a warning if unprivileged.
-                const RECV_BUF: usize = 32 * 1024 * 1024;
+                const RECV_BUF: usize = 256 * 1024 * 1024;
                 let buf_val = RECV_BUF as libc::c_int;
                 let force_ok = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUFFORCE,
                     &buf_val as *const _ as _, size_of::<libc::c_int>() as _) == 0;
@@ -215,7 +215,7 @@ impl ShredReceiver {
                 libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_BUSY_POLL,
                     &val as *const _ as _, size_of::<libc::c_int>() as _);
 
-                const RECV_BUF: usize = 32 * 1024 * 1024;
+                const RECV_BUF: usize = 256 * 1024 * 1024;
                 let buf_val = RECV_BUF as libc::c_int;
                 let force_ok = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUFFORCE,
                     &buf_val as *const _ as _, size_of::<libc::c_int>() as _) == 0;
@@ -243,6 +243,74 @@ impl ShredReceiver {
             race_tx,
             capture_tx,
             dst_ip: [0, 0, 0, 0],
+            dst_port: port,
+        })
+    }
+
+    /// Bind to a generic unicast UDP address.
+    ///
+    /// Used for the `unicast` source type: receives shreds forwarded by a relay
+    /// (e.g. a shredder UDP output) or any unicast UDP forwarder. Unlike turbine,
+    /// this does NOT set SO_REUSEPORT — it binds exclusively to `addr:port`.
+    ///
+    /// `addr` is the local bind address (e.g. `"0.0.0.0"` or a specific IP).
+    /// `port` is the UDP port to listen on.
+    pub fn new_generic_unicast(
+        addr: &str,
+        port: u16,
+        tx: Sender<RawShred>,
+        metrics: Arc<SourceMetrics>,
+        shred_version: Option<u16>,
+        race_tx: Option<Sender<ShredArrival>>,
+        capture_tx: Option<Sender<CaptureEvent>>,
+    ) -> Result<Self> {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+        socket.set_reuse_address(true)?;
+        // No SO_REUSEPORT — exclusive bind to this address.
+        // No multicast group join — unicast only.
+
+        let bind_ip: Ipv4Addr = addr.parse().unwrap_or(Ipv4Addr::UNSPECIFIED);
+        let bind_addr = SocketAddrV4::new(bind_ip, port);
+        socket.bind(&bind_addr.into())?;
+
+        #[cfg(target_os = "linux")]
+        {
+            use std::mem::size_of;
+            use std::os::unix::io::AsRawFd;
+            let fd = socket.as_raw_fd();
+            unsafe {
+                let val: libc::c_int = 50;
+                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_BUSY_POLL,
+                    &val as *const _ as _, size_of::<libc::c_int>() as _);
+
+                const RECV_BUF: usize = 256 * 1024 * 1024;
+                let buf_val = RECV_BUF as libc::c_int;
+                let force_ok = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUFFORCE,
+                    &buf_val as *const _ as _, size_of::<libc::c_int>() as _) == 0;
+                if !force_ok {
+                    socket.set_recv_buffer_size(RECV_BUF).ok();
+                }
+
+                let one: libc::c_int = 1;
+                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_TIMESTAMPNS,
+                    &one as *const _ as _, size_of::<libc::c_int>() as _);
+            }
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        socket.set_recv_buffer_size(4 * 1024 * 1024)?;
+
+        let rt_to_mono_offset_ns = sample_rt_to_mono_offset_ns();
+
+        Ok(Self {
+            socket,
+            tx,
+            metrics,
+            shred_version,
+            rt_to_mono_offset_ns,
+            race_tx,
+            capture_tx,
+            dst_ip: bind_ip.octets(),
             dst_port: port,
         })
     }

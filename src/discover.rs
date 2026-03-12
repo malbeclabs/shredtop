@@ -615,6 +615,26 @@ fn show_configured_sources(config: &ProbeConfig) {
                         s.interface.as_deref().unwrap_or("doublezero1"),
                     );
                 }
+                "unicast" => {
+                    println!(
+                        "  {:<20} {:<10} {:<20} {:<8} {:<14}",
+                        s.name,
+                        "unicast",
+                        s.multicast_addr.as_deref().unwrap_or("0.0.0.0"),
+                        s.port.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+                        "-",
+                    );
+                }
+                "turbine" => {
+                    println!(
+                        "  {:<20} {:<10} {:<20} {:<8} {:<14}",
+                        s.name,
+                        "turbine",
+                        "-",
+                        s.port.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
+                        "-",
+                    );
+                }
                 "rpc" | "geyser" | "jito-grpc" => {
                     println!(
                         "  {:<20} {:<10} {:<20} {:<8} {:<14}",
@@ -736,10 +756,11 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
         println!();
         println!("Source type:");
         println!("  1) shred     — UDP multicast shred feed (custom / non-DoubleZero)");
-        println!("  2) rpc       — Solana JSON-RPC (local or remote)");
-        println!("  3) geyser    — Yellowstone gRPC (Helius, Triton, QuickNode, …)");
-        println!("  4) jito-grpc — Jito ShredStream gRPC proxy (local)");
-        print!("{}", color::yellow("Type [1-4]: "));
+        println!("  2) unicast   — UDP unicast shred feed (relay output or any UDP forwarder)");
+        println!("  3) rpc       — Solana JSON-RPC (local or remote)");
+        println!("  4) geyser    — Yellowstone gRPC (Helius, Triton, QuickNode, …)");
+        println!("  5) jito-grpc — Jito ShredStream gRPC proxy (local)");
+        print!("{}", color::yellow("Type [1-5]: "));
         io::stdout().flush().ok();
 
         let mut input = String::new();
@@ -774,7 +795,31 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
                     shred_version: None,
                 }
             }
-            "2" | "rpc" => {
+            "2" | "unicast" => {
+                let name = prompt_required("  Name", "e.g. my-relay");
+                let addr = prompt_with_default("  Bind address", "0.0.0.0", "local IP to bind");
+                let port_str = prompt_required("  Port", "e.g. 6000");
+                let port: u16 = match port_str.parse() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        println!("  Invalid port — skipping source.");
+                        continue;
+                    }
+                };
+                SourceEntry {
+                    name,
+                    source_type: "unicast".into(),
+                    multicast_addr: Some(addr),
+                    port: Some(port),
+                    interface: None,
+                    url: None,
+                    x_token: None,
+                    pin_recv_core: None,
+                    pin_decode_core: None,
+                    shred_version: None,
+                }
+            }
+            "3" | "rpc" => {
                 let name = prompt_with_default("  Name", "rpc", "display name");
                 let url = prompt_required("  URL", "e.g. http://127.0.0.1:8899");
                 SourceEntry {
@@ -790,7 +835,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
                     shred_version: None,
                 }
             }
-            "3" | "geyser" => {
+            "4" | "geyser" => {
                 let name = prompt_required("  Name", "e.g. helius");
                 let url =
                     prompt_required("  URL", "e.g. https://mainnet.helius-rpc.com:443");
@@ -808,7 +853,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
                     shred_version: None,
                 }
             }
-            "4" | "jito-grpc" => {
+            "5" | "jito-grpc" => {
                 let name = prompt_with_default("  Name", "jito-grpc", "display name");
                 let url =
                     prompt_with_default("  URL", "http://127.0.0.1:9999", "proxy address");
@@ -826,7 +871,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
                 }
             }
             _ => {
-                println!("  Unknown type — enter 1, 2, 3, or 4.");
+                println!("  Unknown type — enter 1, 2, 3, 4, or 5.");
                 continue;
             }
         };

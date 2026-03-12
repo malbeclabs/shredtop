@@ -7,7 +7,7 @@
 use anyhow::Result;
 use chrono::{TimeZone, Utc};
 use libc;
-use shred_ingest::{GeyserTxSource, JitoShredstreamSource, RpcTxSource, ShredTxSource, TurbineTxSource, SourceMetrics};
+use shred_ingest::{GeyserTxSource, JitoShredstreamSource, RpcTxSource, ShredTxSource, TurbineTxSource, UnicastTxSource, SourceMetrics};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -460,6 +460,19 @@ pub fn build_source(
             let port = entry.port.unwrap_or(8002);
             Box::new(TurbineTxSource {
                 name,
+                port,
+                pin_recv_core: entry.pin_recv_core,
+                pin_decode_core: entry.pin_decode_core,
+                shred_version: entry.shred_version,
+                capture_tx,
+            })
+        }
+        "unicast" => {
+            let addr = entry.multicast_addr.as_deref().unwrap_or("0.0.0.0").to_string();
+            let port = entry.port.unwrap_or(6000);
+            Box::new(UnicastTxSource {
+                name,
+                addr,
                 port,
                 pin_recv_core: entry.pin_recv_core,
                 pin_decode_core: entry.pin_decode_core,

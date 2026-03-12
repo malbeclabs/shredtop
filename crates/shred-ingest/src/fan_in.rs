@@ -212,6 +212,90 @@ impl TxSource for TurbineTxSource {
 }
 
 // ---------------------------------------------------------------------------
+// UnicastTxSource
+// ---------------------------------------------------------------------------
+
+/// Receives shreds from a unicast UDP forwarder (e.g. a shredder relay output).
+///
+/// Binds `addr:port` without SO_REUSEPORT. Suitable for receiving shreds forwarded
+/// by a shredder relay or any unicast UDP sender. Use this when you cannot join
+/// a multicast group directly but have a relay forwarding shreds to you.
+pub struct UnicastTxSource {
+    /// Display name (e.g. "my-relay")
+    pub name: &'static str,
+    /// Local bind address (e.g. "0.0.0.0" or a specific IP)
+    pub addr: String,
+    /// UDP port to listen on
+    pub port: u16,
+    pub pin_recv_core: Option<usize>,
+    pub pin_decode_core: Option<usize>,
+    pub shred_version: Option<u16>,
+    pub capture_tx: Option<crossbeam_channel::Sender<CaptureEvent>>,
+}
+
+impl TxSource for UnicastTxSource {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn is_rpc(&self) -> bool {
+        false
+    }
+
+    fn start(
+        self: Box<Self>,
+        tx: Sender<DecodedTx>,
+        metrics: Arc<SourceMetrics>,
+        race: Option<Arc<ShredRaceTracker>>,
+    ) -> Vec<JoinHandle<()>> {
+        let (shred_tx, shred_rx) = crossbeam_channel::bounded(4096);
+
+        let addr = self.addr.clone();
+        let port = self.port;
+        let shred_version = self.shred_version;
+        let recv_metrics = metrics.clone();
+        let pin_recv = self.pin_recv_core;
+        let name = self.name;
+        let race_tx = race.as_ref().map(|r| r.sender());
+        let capture_tx = self.capture_tx.clone();
+
+        let recv_handle = std::thread::Builder::new()
+            .name(format!("{}-recv", name))
+            .spawn(move || {
+                if let Some(core) = pin_recv {
+                    pin_to_core(core);
+                }
+                let mut receiver = crate::receiver::ShredReceiver::new_generic_unicast(
+                    &addr,
+                    port,
+                    shred_tx,
+                    recv_metrics,
+                    shred_version,
+                    race_tx,
+                    capture_tx,
+                )
+                .expect("failed to create unicast receiver");
+                receiver.run().expect("unicast receiver crashed");
+            })
+            .expect("failed to spawn unicast recv thread");
+
+        let pin_decode = self.pin_decode_core;
+        let decode_handle = std::thread::Builder::new()
+            .name(format!("{}-decode", name))
+            .spawn(move || {
+                if let Some(core) = pin_decode {
+                    pin_to_core(core);
+                }
+                let decoder = crate::decoder::ShredDecoder::new(shred_rx, tx, metrics);
+                decoder.run().expect("unicast decoder crashed");
+            })
+            .expect("failed to spawn unicast decode thread");
+
+        vec![recv_handle, decode_handle]
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RpcTxSource
 // ---------------------------------------------------------------------------
 
