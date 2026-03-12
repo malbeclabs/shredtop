@@ -101,6 +101,13 @@ pub struct SourceMetrics {
     /// Shreds silently dropped because the receiver→decoder channel was full
     /// (backpressure from the decoder falling behind).
     pub shreds_dropped: AtomicU64,
+    /// Packets rejected in the hot path: too short, unknown variant byte, or
+    /// heartbeat packets. These never reach the decoder.
+    pub shreds_invalid: AtomicU64,
+    /// Monotonic nanosecond timestamp of the last DoubleZero heartbeat packet
+    /// received on this source's socket. Zero if no heartbeat has been seen.
+    /// Heartbeat magic: `0x44 0x5A 0x00 0x01` ("DZ\x00\x01").
+    pub last_heartbeat_ns: AtomicU64,
 
     // Slot outcomes
     pub slots_attempted: AtomicU64,
@@ -145,6 +152,9 @@ pub struct SourceMetricsSnapshot {
     pub shreds_received: u64,
     pub bytes_received: u64,
     pub shreds_dropped: u64,
+    pub shreds_invalid: u64,
+    /// Seconds since the last DZ heartbeat, or None if no heartbeat ever seen.
+    pub secs_since_heartbeat: Option<u64>,
     pub slots_attempted: u64,
     pub slots_complete: u64,
     pub slots_partial: u64,
@@ -174,6 +184,8 @@ impl SourceMetrics {
             shreds_received: AtomicU64::new(0),
             bytes_received: AtomicU64::new(0),
             shreds_dropped: AtomicU64::new(0),
+            shreds_invalid: AtomicU64::new(0),
+            last_heartbeat_ns: AtomicU64::new(0),
             slots_attempted: AtomicU64::new(0),
             slots_complete: AtomicU64::new(0),
             slots_partial: AtomicU64::new(0),
@@ -268,12 +280,22 @@ impl SourceMetrics {
             log.iter().cloned().collect()
         };
 
+        let now_ns = crate::metrics::now_ns();
+        let last_hb = self.last_heartbeat_ns.load(Relaxed);
+        let secs_since_heartbeat = if last_hb == 0 {
+            None
+        } else {
+            Some(now_ns.saturating_sub(last_hb) / 1_000_000_000)
+        };
+
         SourceMetricsSnapshot {
             name: self.name,
             is_rpc: self.is_rpc,
             shreds_received: self.shreds_received.load(Relaxed),
             bytes_received: self.bytes_received.load(Relaxed),
             shreds_dropped: self.shreds_dropped.load(Relaxed),
+            shreds_invalid: self.shreds_invalid.load(Relaxed),
+            secs_since_heartbeat,
             slots_attempted: self.slots_attempted.load(Relaxed),
             slots_complete: self.slots_complete.load(Relaxed),
             slots_partial: self.slots_partial.load(Relaxed),

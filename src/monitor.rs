@@ -168,13 +168,13 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
     // Column headers — BEAT%/LEAD columns only shown when a baseline exists
     if has_rpc {
         out.push(color::bold(&format!(
-            "{:<20}  {:>9}  {:>5}  {:>6}  {:>6}  {:>9}  {:>9}  {:>9}  {:>9}",
-            "SOURCE", "SHREDS/s", "COV%", "TXS/s", "BEAT%", "LEAD avg", "LEAD p50", "LEAD p95", "LEAD p99",
+            "{:<20}  {:>5}  {:>9}  {:>5}  {:>6}  {:>6}  {:>9}  {:>9}  {:>9}  {:>9}",
+            "SOURCE", "LINK", "SHREDS/s", "COV%", "TXS/s", "BEAT%", "LEAD avg", "LEAD p50", "LEAD p95", "LEAD p99",
         )));
     } else {
         out.push(color::bold(&format!(
-            "{:<20}  {:>9}  {:>5}  {:>6}",
-            "SOURCE", "SHREDS/s", "COV%", "TXS/s",
+            "{:<20}  {:>5}  {:>9}  {:>5}  {:>6}",
+            "SOURCE", "LINK", "SHREDS/s", "COV%", "TXS/s",
         )));
     }
     out.push(color::dim(&"-".repeat(W)));
@@ -185,6 +185,19 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
         for s in sources {
             let name = s["name"].as_str().unwrap_or("?");
             let is_rpc = s["is_rpc"].as_bool().unwrap_or(false);
+
+            // LINK column: DZ heartbeat freshness indicator (shred sources only).
+            // OK = heartbeat seen ≤10s ago, STALE = 10-60s, DEAD = >60s or never.
+            let link_str: String = if is_rpc {
+                "—".into()
+            } else {
+                match s["secs_since_heartbeat"].as_u64() {
+                    Some(secs) if secs <= 10 => color::green("OK"),
+                    Some(secs) if secs <= 60 => color::yellow("STALE"),
+                    Some(_) => color::red("DEAD"),
+                    None => color::dim("—"),
+                }
+            };
 
             let shreds_str = if is_rpc {
                 "—".into()
@@ -228,13 +241,13 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
                 };
 
                 format!(
-                    "{:<20}  {:>9}  {:>5}  {:>6}  {:>6}  {:>9}  {:>9}  {:>9}  {:>9}",
-                    name, shreds_str, cov_str, txs_str, beat_str, avg_str, p50_str, p95_str, p99_str,
+                    "{:<20}  {:>5}  {:>9}  {:>5}  {:>6}  {:>6}  {:>9}  {:>9}  {:>9}  {:>9}",
+                    name, link_str, shreds_str, cov_str, txs_str, beat_str, avg_str, p50_str, p95_str, p99_str,
                 )
             } else {
                 format!(
-                    "{:<20}  {:>9}  {:>5}  {:>6}",
-                    name, shreds_str, cov_str, txs_str,
+                    "{:<20}  {:>5}  {:>9}  {:>5}  {:>6}",
+                    name, link_str, shreds_str, cov_str, txs_str,
                 )
             };
 
@@ -372,12 +385,13 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
     out.push(color::dim(&"-".repeat(W)));
     if has_rpc {
         out.push(color::dim(
-            "COV% = block shreds received  BEAT% = % of matched txs where feed beat RPC  \
-             LEAD = ms before RPC confirms  p50/p95/p99 = percentiles",
+            "LINK = DZ heartbeat (OK ≤10s / STALE ≤60s / DEAD)  COV% = block shreds received  \
+             BEAT% = % of matched txs where feed beat RPC  LEAD = ms before RPC  p50/p95/p99 = percentiles",
         ));
     } else {
         out.push(color::dim(
-            "COV% = block shreds received  (add a baseline to unlock BEAT%/LEAD columns)",
+            "LINK = DZ heartbeat (OK ≤10s / STALE ≤60s / DEAD)  COV% = block shreds received  \
+             (add a baseline to unlock BEAT%/LEAD columns)",
         ));
     }
 

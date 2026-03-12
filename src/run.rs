@@ -15,6 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::capture;
 use crate::config::ProbeConfig;
+use crate::metrics_server::{self, MetricsSnapshot};
 use crate::monitor::build_source;
 
 pub const DEFAULT_LOG: &str = "/var/log/shredtop.jsonl";
@@ -46,6 +47,11 @@ struct SourceSnap<'a> {
     txs_first: u64,
     /// Total transactions this source arrived as a duplicate (matched another source, cumulative)
     txs_duplicate: u64,
+    /// Seconds since last DoubleZero heartbeat, or null if never received.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secs_since_heartbeat: Option<u64>,
+    /// Packets rejected before the decoder (too short, unknown variant, or heartbeat).
+    shreds_invalid: u64,
 }
 
 pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Result<()> {
@@ -60,6 +66,13 @@ pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Resul
         interval_secs
     );
     eprintln!("Run `shredtop status` to check current metrics.");
+
+    // Spin up the optional Prometheus metrics server.
+    let metrics_updater = if config.metrics.enabled {
+        Some(metrics_server::spawn(config.metrics.port))
+    } else {
+        None
+    };
 
     // Spin up the capture thread if [capture] is configured and enabled.
     let cap_tx: Option<crossbeam_channel::Sender<CaptureEvent>> =
@@ -144,6 +157,10 @@ pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Resul
             }
         }
 
+        if let Some(ref updater) = metrics_updater {
+            updater.update(MetricsSnapshot { sources: curr.clone() });
+        }
+
         prev = curr;
     }
 }
@@ -188,5 +205,7 @@ fn make_snap<'a>(
         txs_per_sec: txs_delta as f64 / elapsed,
         txs_first: c.txs_first,
         txs_duplicate: c.txs_duplicate,
+        secs_since_heartbeat: c.secs_since_heartbeat,
+        shreds_invalid: c.shreds_invalid,
     }
 }

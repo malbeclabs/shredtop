@@ -15,6 +15,7 @@ mod capture_status;
 mod cli;
 mod config;
 mod discover;
+mod metrics_server;
 mod monitor;
 mod run;
 mod service;

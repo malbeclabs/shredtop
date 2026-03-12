@@ -18,6 +18,30 @@ pub struct ProbeConfig {
     /// Raw shred capture configuration. Omit to disable capture.
     #[serde(default)]
     pub capture: Option<CaptureConfig>,
+    /// Prometheus metrics HTTP endpoint. Omit or set enabled=false to disable.
+    #[serde(default)]
+    pub metrics: MetricsConfig,
+}
+
+/// Configuration for the optional Prometheus metrics HTTP endpoint.
+/// When enabled, shredtop serves Prometheus text-format metrics at
+/// `http://0.0.0.0:<port>/metrics`. Disabled by default.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MetricsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "MetricsConfig::default_port")]
+    pub port: u16,
+}
+
+impl MetricsConfig {
+    fn default_port() -> u16 { 9090 }
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self { enabled: false, port: Self::default_port() }
+    }
 }
 
 /// Configuration for the always-on ring-buffer capture subsystem.
@@ -111,6 +135,7 @@ impl ProbeConfig {
         Self {
             filter_programs: Vec::new(),
             capture: None,
+            metrics: MetricsConfig::default(),
             sources: vec![
                 SourceEntry {
                     name: "bebop".into(),

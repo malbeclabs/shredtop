@@ -378,6 +378,38 @@ impl ShredReceiver {
                     continue;
                 }
 
+                // DoubleZero heartbeat: 4-byte magic "DZ\x00\x01" (0x44 0x5A 0x00 0x01).
+                // Arrives on the same socket as shreds; skip the shred pipeline.
+                if len >= 4
+                    && pkts[i][0] == 0x44
+                    && pkts[i][1] == 0x5A
+                    && pkts[i][2] == 0x00
+                    && pkts[i][3] == 0x01
+                {
+                    self.metrics.last_heartbeat_ns.store(metrics::now_ns(), Relaxed);
+                    continue;
+                }
+
+                // Minimum shred size: common header (65B) + coding header end (89B).
+                // Data shreds need 88B; coding shreds need 89B — use 89 for both.
+                // Anything shorter is malformed and cannot be parsed.
+                if len < 89 {
+                    self.metrics.shreds_invalid.fetch_add(1, Relaxed);
+                    continue;
+                }
+
+                // Variant byte (offset 64) must be a known data or coding value.
+                // Unknown variants indicate garbage UDP payloads — drop before decoder.
+                let variant = pkts[i][64];
+                let is_data = variant == 0xa5
+                    || matches!(variant & 0xF0, 0x80 | 0x90 | 0xa0 | 0xb0);
+                let is_code = matches!(variant & 0xF0, 0x40 | 0x50 | 0x60 | 0x70)
+                    && variant != 0x5a;
+                if !is_data && !is_code {
+                    self.metrics.shreds_invalid.fetch_add(1, Relaxed);
+                    continue;
+                }
+
                 // Shred version filter: bytes 77-78 (u16 LE) carry the fork ID.
                 if let Some(ver) = self.shred_version {
                     if len >= 79 {
@@ -445,6 +477,25 @@ impl ShredReceiver {
             let n = self.socket.recv(buf_uninit)?;
             let ts = metrics::now_ns();
             if n == 0 { continue; }
+
+            // DoubleZero heartbeat check.
+            if n >= 4 && buf[0] == 0x44 && buf[1] == 0x5A && buf[2] == 0x00 && buf[3] == 0x01 {
+                self.metrics.last_heartbeat_ns.store(ts, Relaxed);
+                continue;
+            }
+
+            // Minimum length + variant validation.
+            if n < 89 {
+                self.metrics.shreds_invalid.fetch_add(1, Relaxed);
+                continue;
+            }
+            let variant = buf[64];
+            let is_data = variant == 0xa5 || matches!(variant & 0xF0, 0x80 | 0x90 | 0xa0 | 0xb0);
+            let is_code = matches!(variant & 0xF0, 0x40 | 0x50 | 0x60 | 0x70) && variant != 0x5a;
+            if !is_data && !is_code {
+                self.metrics.shreds_invalid.fetch_add(1, Relaxed);
+                continue;
+            }
 
             if let Some(ver) = self.shred_version {
                 if n >= 79 {
