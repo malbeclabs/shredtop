@@ -159,10 +159,7 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
                         if traffic_ports.contains_key(&g.multicast_ip) {
                             // detected from traffic — already printed above
                         } else {
-                            println!(
-                                "  {} — no traffic detected; using known port {}",
-                                g.code, p
-                            );
+                            println!("  {} — using default port {}", g.code, p);
                         }
                         Some(p)
                     } else {
@@ -219,13 +216,7 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
                 s.interface.as_deref().unwrap_or("?"),
             );
         }
-        println!();
-        if prompt_yn(&format!(
-            "Include these DoubleZero feeds in {}?",
-            config_path.display()
-        )) {
-            sources_to_write.extend(dz_sources);
-        }
+        sources_to_write.extend(dz_sources);
     }
 
     // -----------------------------------------------------------------------
