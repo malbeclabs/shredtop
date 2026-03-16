@@ -52,6 +52,8 @@ struct SourceSnap<'a> {
     secs_since_heartbeat: Option<u64>,
     /// Packets rejected before the decoder (too short, unknown variant, or heartbeat).
     shreds_invalid: u64,
+    /// Transactions counted as backfill (lead time > 2000ms — gRPC source replaying confirmed txs).
+    backfill: u64,
 }
 
 pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Result<()> {
@@ -207,5 +209,6 @@ fn make_snap<'a>(
         txs_duplicate: c.txs_duplicate,
         secs_since_heartbeat: c.secs_since_heartbeat,
         shreds_invalid: c.shreds_invalid,
+        backfill: c.backfill_count,
     }
 }

@@ -135,6 +135,9 @@ pub struct SourceMetrics {
     /// Number of lead-time samples where this source beat RPC (lead_time > 0)
     pub lead_wins: AtomicU64,
     pub lead_time_sum_us: AtomicI64,
+    /// Transactions where the counterpart gRPC source delivered a tx that arrived
+    /// >LEAD_TIME_MAX_US after this source — almost certainly backfilled/replayed data.
+    pub backfill_count: AtomicU64,
     /// Rolling reservoir of recent samples; sorted at snapshot time to compute percentiles.
     lead_time_reservoir: Mutex<LeadTimeReservoir>,
 
@@ -169,6 +172,8 @@ pub struct SourceMetricsSnapshot {
     pub lead_time_count: u64,
     pub lead_wins: u64,
     pub lead_time_sum_us: i64,
+    /// Transactions discarded as backfill (lead time > LEAD_TIME_MAX_US).
+    pub backfill_count: u64,
     pub lead_time_p50_us: Option<i64>,
     pub lead_time_p95_us: Option<i64>,
     pub lead_time_p99_us: Option<i64>,
@@ -200,6 +205,7 @@ impl SourceMetrics {
             lead_time_count: AtomicU64::new(0),
             lead_wins: AtomicU64::new(0),
             lead_time_sum_us: AtomicI64::new(0),
+            backfill_count: AtomicU64::new(0),
             lead_time_reservoir: Mutex::new(LeadTimeReservoir::new()),
             slot_log: Mutex::new(VecDeque::with_capacity(SLOT_LOG_CAP)),
         })
@@ -225,7 +231,11 @@ impl SourceMetrics {
     /// Positive values mean this source arrived before its counterpart.
     /// Samples outside [LEAD_TIME_MIN_US, LEAD_TIME_MAX_US] are discarded.
     pub fn record_lead_time_us(&self, us: i64) {
-        if us > Self::LEAD_TIME_MAX_US || us < Self::LEAD_TIME_MIN_US {
+        if us > Self::LEAD_TIME_MAX_US {
+            self.backfill_count.fetch_add(1, Relaxed);
+            return;
+        }
+        if us < Self::LEAD_TIME_MIN_US {
             return;
         }
         self.lead_time_count.fetch_add(1, Relaxed);
@@ -310,6 +320,7 @@ impl SourceMetrics {
             lead_time_count: self.lead_time_count.load(Relaxed),
             lead_wins: self.lead_wins.load(Relaxed),
             lead_time_sum_us: self.lead_time_sum_us.load(Relaxed),
+            backfill_count: self.backfill_count.load(Relaxed),
             lead_time_p50_us: lead_p50,
             lead_time_p95_us: lead_p95,
             lead_time_p99_us: lead_p99,
@@ -355,6 +366,23 @@ mod tests {
         let snap = m.snapshot();
         assert!(snap.lead_time_p50_us.is_some());
         assert!(snap.lead_time_p99_us.is_some());
+    }
+
+    #[test]
+    fn test_backfill_detection() {
+        let m = SourceMetrics::new("test", false);
+        // Normal samples — not backfill
+        m.record_lead_time_us(500_000);
+        m.record_lead_time_us(1_999_999);
+        // Backfill samples (> LEAD_TIME_MAX_US)
+        m.record_lead_time_us(2_000_001);
+        m.record_lead_time_us(3_000_000);
+        // Low outlier — not backfill, just discarded
+        m.record_lead_time_us(-500_001);
+        assert_eq!(m.backfill_count.load(Relaxed), 2);
+        assert_eq!(m.lead_time_count.load(Relaxed), 2);
+        let snap = m.snapshot();
+        assert_eq!(snap.backfill_count, 2);
     }
 
     #[test]

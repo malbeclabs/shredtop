@@ -8,6 +8,7 @@ use anyhow::Result;
 use chrono::{TimeZone, Utc};
 use libc;
 use shred_ingest::{GeyserTxSource, JitoShredstreamSource, RpcTxSource, ShredTxSource, TurbineTxSource, UnicastTxSource, SourceMetrics};
+use shred_ingest::{ThorTxSource, JetstreamTxSource};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -183,8 +184,15 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
 
     if let Some(sources) = entry["sources"].as_array() {
         for s in sources {
-            let name = s["name"].as_str().unwrap_or("?");
+            let raw_name = s["name"].as_str().unwrap_or("?");
             let is_rpc = s["is_rpc"].as_bool().unwrap_or(false);
+            let backfill = s["backfill"].as_u64().unwrap_or(0);
+            let name_display: String = if backfill > 0 {
+                format!("{} {}", raw_name, color::yellow(&format!("[{}bf]", backfill)))
+            } else {
+                raw_name.to_string()
+            };
+            let name = name_display.as_str();
 
             // LINK column: DZ heartbeat freshness indicator (shred sources only).
             // OK = heartbeat seen ≤10s ago, STALE = 10-60s, DEAD = >60s or never.
@@ -283,7 +291,7 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
                     };
                     edge_lines.push(format!(
                         "  {}  {:<20} {}  by {:.2}ms avg  ({} samples)",
-                        symbol, name, label, mean_ms.abs(), samples,
+                        symbol, raw_name, label, mean_ms.abs(), samples,
                     ));
                 }
             }
@@ -423,8 +431,11 @@ pub fn build_source(
     capture_tx: Option<crossbeam_channel::Sender<shred_ingest::CaptureEvent>>,
 ) -> Result<(Box<dyn shred_ingest::TxSource>, Arc<SourceMetrics>)> {
     let name: &'static str = Box::leak(entry.name.clone().into_boxed_str());
-    // rpc and geyser are baseline sources; shred and jito-grpc are shred-tier feeds.
-    let is_rpc = matches!(entry.source_type.as_str(), "rpc" | "geyser");
+    // rpc, geyser, and gRPC-confirmed-tx sources are baselines; shred-tier feeds are not.
+    let is_rpc = matches!(
+        entry.source_type.as_str(),
+        "rpc" | "geyser" | "shreder" | "arpc" | "thor" | "jetstream"
+    );
     let metrics = SourceMetrics::new(name, is_rpc);
 
     let source: Box<dyn shred_ingest::TxSource> = match entry.source_type.as_str() {
@@ -469,6 +480,27 @@ pub fn build_source(
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("source '{}': missing url for jito-grpc source", name))?;
             Box::new(JitoShredstreamSource { name, url })
+        }
+        "shreder" | "arpc" => {
+            let url = entry
+                .url
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("source '{}': missing url for {} source", name, entry.source_type))?;
+            Box::new(GeyserTxSource { name, url, x_token: entry.x_token.clone() })
+        }
+        "thor" => {
+            let url = entry
+                .url
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("source '{}': missing url for thor source", name))?;
+            Box::new(ThorTxSource { name, url, x_token: entry.x_token.clone() })
+        }
+        "jetstream" => {
+            let url = entry
+                .url
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("source '{}': missing url for jetstream source", name))?;
+            Box::new(JetstreamTxSource { name, url, x_token: entry.x_token.clone() })
         }
         "turbine" => {
             let port = entry.port.unwrap_or(8002);

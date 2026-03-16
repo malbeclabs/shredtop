@@ -88,6 +88,9 @@ fn render(snap: &MetricsSnapshot) -> String {
         gauge(&mut out, "shredtop_shreds_invalid_total",
             &[("source", name)], s.shreds_invalid as f64,
             "Malformed/unknown packets rejected before decoder");
+        gauge(&mut out, "shredtop_backfill_total",
+            &[("source", name)], s.backfill_count as f64,
+            "Transactions where counterpart gRPC source delivered stale/backfilled data (lead > 2000ms)");
 
         if !s.is_rpc {
             if let Some(cov) = coverage_pct(s) {
