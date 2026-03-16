@@ -3,6 +3,10 @@
 //! Measures the latency advantage of DoubleZero / Jito ShredStream raw shred
 //! feeds over confirmed-block RPC polling. Run `shredtop --help` for usage.
 
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 use anyhow::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;

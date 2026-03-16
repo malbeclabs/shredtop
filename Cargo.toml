@@ -11,6 +11,8 @@ edition = "2021"
 rust-version = "1.81"
 
 [workspace.dependencies]
+jemallocator = "0.5"
+
 # Solana — decomposed crates pinned to Agave 3.1.x
 solana-pubkey = "3.0"
 solana-transaction = "3.1"
@@ -72,6 +74,7 @@ path = "src/main.rs"
 
 [dependencies]
 shred-ingest = { path = "crates/shred-ingest" }
+jemallocator = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

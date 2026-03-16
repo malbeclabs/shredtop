@@ -504,13 +504,13 @@ impl FanInSource {
             all_handles.push(relay_handle);
         }
 
-        // Eviction thread: every 60s, drop dedup entries older than 15 minutes
+        // Eviction thread: every 5s, drop dedup entries older than 30 seconds
         let dedup_evict = dedup;
         let evict_handle = std::thread::Builder::new()
             .name("fan-in-evict".into())
             .spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_secs(60));
-                let cutoff_ns = metrics::now_ns().saturating_sub(900_000_000_000);
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let cutoff_ns = metrics::now_ns().saturating_sub(30_000_000_000);
                 dedup_evict.retain(|_, v| v.recv_ns > cutoff_ns);
             })
             .expect("failed to spawn evict thread");

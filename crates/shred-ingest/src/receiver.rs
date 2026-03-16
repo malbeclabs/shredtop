@@ -120,7 +120,7 @@ impl ShredReceiver {
 
                 // SO_RCVBUFFORCE: bypasses net.core.rmem_max (requires root).
                 // Falls back to SO_RCVBUF with a warning if unprivileged.
-                const RECV_BUF: usize = 256 * 1024 * 1024;
+                const RECV_BUF: usize = 32 * 1024 * 1024;
                 let buf_val = RECV_BUF as libc::c_int;
                 let force_ok = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUFFORCE,
                     &buf_val as *const _ as _, size_of::<libc::c_int>() as _) == 0;
@@ -215,7 +215,7 @@ impl ShredReceiver {
                 libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_BUSY_POLL,
                     &val as *const _ as _, size_of::<libc::c_int>() as _);
 
-                const RECV_BUF: usize = 256 * 1024 * 1024;
+                const RECV_BUF: usize = 32 * 1024 * 1024;
                 let buf_val = RECV_BUF as libc::c_int;
                 let force_ok = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUFFORCE,
                     &buf_val as *const _ as _, size_of::<libc::c_int>() as _) == 0;
@@ -283,7 +283,7 @@ impl ShredReceiver {
                 libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_BUSY_POLL,
                     &val as *const _ as _, size_of::<libc::c_int>() as _);
 
-                const RECV_BUF: usize = 256 * 1024 * 1024;
+                const RECV_BUF: usize = 32 * 1024 * 1024;
                 let buf_val = RECV_BUF as libc::c_int;
                 let force_ok = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUFFORCE,
                     &buf_val as *const _ as _, size_of::<libc::c_int>() as _) == 0;

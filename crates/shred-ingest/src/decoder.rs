@@ -492,6 +492,7 @@ impl ShredDecoder {
 
                 if fec.ready_to_recover() {
                     let recovered = fec.reconstruct();
+                    fec.shards.clear();
                     if !recovered.is_empty() {
                         let slot_state = slots.entry(slot).or_insert_with(|| {
                             self.metrics.slots_attempted.fetch_add(1, Relaxed);
