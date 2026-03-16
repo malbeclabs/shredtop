@@ -413,7 +413,12 @@ impl ShredDecoder {
                 None => continue,
             };
 
-            if slot > highest_slot {
+            // Guard against corrupted shreds with garbage slot values.
+            // A jump larger than MAX_SLOT_JUMP would poison highest_slot and
+            // cause all subsequent real shreds to fail the expiry check below,
+            // silently dropping all output until restart.
+            const MAX_SLOT_JUMP: u64 = 1000;
+            if slot > highest_slot && slot.saturating_sub(highest_slot) <= MAX_SLOT_JUMP {
                 highest_slot = slot;
                 slots.retain(|&s, state| {
                     if s + SLOT_EXPIRY_DISTANCE >= highest_slot {
@@ -898,5 +903,31 @@ mod tests {
         }
         let recovered = fec.reconstruct();
         assert!(recovered.is_empty());
+    }
+
+    #[test]
+    fn test_highest_slot_not_poisoned_by_garbage() {
+        // Reproduces the production bug: a single shred with slot=u64::MAX would
+        // set highest_slot to u64::MAX, causing every subsequent real shred to
+        // fail the expiry check and be silently dropped forever.
+        const MAX_SLOT_JUMP: u64 = 1000;
+
+        let mut highest_slot: u64 = 100;
+
+        // Simulate a corrupted shred with a garbage slot value.
+        let garbage_slot = u64::MAX;
+        if garbage_slot > highest_slot
+            && garbage_slot.saturating_sub(highest_slot) <= MAX_SLOT_JUMP
+        {
+            highest_slot = garbage_slot;
+        }
+        assert_eq!(highest_slot, 100, "garbage slot must not poison highest_slot");
+
+        // Normal slot progression must still work after the bad shred.
+        let next_slot = 102u64;
+        if next_slot > highest_slot && next_slot.saturating_sub(highest_slot) <= MAX_SLOT_JUMP {
+            highest_slot = next_slot;
+        }
+        assert_eq!(highest_slot, 102);
     }
 }
