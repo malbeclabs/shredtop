@@ -119,6 +119,11 @@ pub struct SourceEntry {
     /// Useful during forks or network upgrades. Omit to accept all versions.
     #[serde(default)]
     pub shred_version: Option<u16>,
+    /// UDP port for DoubleZero heartbeat packets (shred only). Defaults to 5765.
+    /// DZ sends heartbeats on the same multicast group but a separate port from
+    /// shred data. Set this if the heartbeat port differs from the default.
+    #[serde(default)]
+    pub heartbeat_port: Option<u16>,
 }
 
 impl ProbeConfig {
@@ -148,6 +153,7 @@ impl ProbeConfig {
                     pin_recv_core: None,
                     pin_decode_core: None,
                     shred_version: None,
+                    heartbeat_port: None,
                 },
                 SourceEntry {
                     name: "jito-shredstream".into(),
@@ -160,6 +166,7 @@ impl ProbeConfig {
                     pin_recv_core: None,
                     pin_decode_core: None,
                     shred_version: None,
+                    heartbeat_port: None,
                 },
                 SourceEntry {
                     name: "rpc".into(),
@@ -172,6 +179,7 @@ impl ProbeConfig {
                     pin_recv_core: None,
                     pin_decode_core: None,
                     shred_version: None,
+                    heartbeat_port: None,
                 },
             ],
         }

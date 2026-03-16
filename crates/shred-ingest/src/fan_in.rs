@@ -62,6 +62,8 @@ pub struct ShredTxSource {
     pub shred_version: Option<u16>,
     /// Optional capture channel; forwarded to ShredReceiver for the hot-path tap.
     pub capture_tx: Option<crossbeam_channel::Sender<CaptureEvent>>,
+    /// DZ heartbeat port. Defaults to 5765 if None.
+    pub heartbeat_port: Option<u16>,
 }
 
 impl TxSource for ShredTxSource {
@@ -90,6 +92,11 @@ impl TxSource for ShredTxSource {
         let name = self.name;
         let race_tx = race.as_ref().map(|r| r.sender());
         let capture_tx = self.capture_tx.clone();
+
+        // Clone for heartbeat listener before recv thread moves them.
+        let hb_mcast = self.multicast_addr.clone();
+        let hb_iface = self.interface.clone();
+        let hb_metrics = metrics.clone();
 
         let recv_handle = std::thread::Builder::new()
             .name(format!("{}-recv", name))
@@ -124,7 +131,20 @@ impl TxSource for ShredTxSource {
             })
             .expect("failed to spawn decode thread");
 
-        vec![recv_handle, decode_handle]
+        // Spawn a separate heartbeat listener. It auto-detects the DZ heartbeat
+        // port by sniffing the interface, or uses the configured override.
+        let mut handles = vec![recv_handle, decode_handle];
+        match crate::receiver::ShredReceiver::spawn_heartbeat_listener(
+            hb_mcast,
+            hb_iface,
+            hb_metrics,
+            name,
+            self.heartbeat_port,
+        ) {
+            Ok(hb_handle) => handles.push(hb_handle),
+            Err(e) => tracing::warn!("{name}: DZ heartbeat listener failed to start: {e}"),
+        }
+        handles
     }
 }
 

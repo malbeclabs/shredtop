@@ -186,6 +186,7 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
                         pin_recv_core: None,
                         pin_decode_core: None,
                         shred_version: None,
+                    heartbeat_port: None,
                     });
                 }
 
@@ -284,6 +285,7 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
                                 pin_recv_core: None,
                                 pin_decode_core: None,
                                 shred_version: None,
+                                heartbeat_port: None,
                             });
                         }
                     }
@@ -306,6 +308,7 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
                     pin_recv_core: None,
                     pin_decode_core: None,
                     shred_version: None,
+                    heartbeat_port: None,
                 });
             }
             _ => {
@@ -785,6 +788,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
                     pin_recv_core: None,
                     pin_decode_core: None,
                     shred_version: None,
+                    heartbeat_port: None,
                 }
             }
             "2" | "unicast" => {
@@ -809,6 +813,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
                     pin_recv_core: None,
                     pin_decode_core: None,
                     shred_version: None,
+                    heartbeat_port: None,
                 }
             }
             "3" | "rpc" => {
@@ -825,6 +830,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
                     pin_recv_core: None,
                     pin_decode_core: None,
                     shred_version: None,
+                    heartbeat_port: None,
                 }
             }
             "4" | "geyser" => {
@@ -843,6 +849,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
                     pin_recv_core: None,
                     pin_decode_core: None,
                     shred_version: None,
+                    heartbeat_port: None,
                 }
             }
             "5" | "jito-grpc" => {
@@ -860,6 +867,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
                     pin_recv_core: None,
                     pin_decode_core: None,
                     shred_version: None,
+                    heartbeat_port: None,
                 }
             }
             _ => {
