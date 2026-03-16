@@ -65,6 +65,8 @@ pub fn run(pcap: &Path, feed_args: &[(Ipv4Addr, String)], min_matched: u64) -> R
     let mut race: RaceMap = HashMap::new();
     let mut packets_read: u64 = 0;
     let mut shreds_parsed: u64 = 0;
+    // Per-feed shred type counts: (data, coding).
+    let mut composition: HashMap<String, (u64, u64)> = HashMap::new();
 
     while let Some(pkt_result) = reader.next_packet() {
         let pkt = match pkt_result {
@@ -100,9 +102,15 @@ pub fn run(pcap: &Path, feed_args: &[(Ipv4Addr, String)], min_matched: u64) -> R
         // UDP payload starts at byte 42 (14 + 20 + 8).
         let udp_payload = &data[42..];
 
-        if !is_data_shred(udp_payload) {
+        // Count data vs coding shreds per feed before skipping coding shreds.
+        let counts = composition.entry(feed.clone()).or_insert((0, 0));
+        if is_data_shred(udp_payload) {
+            counts.0 += 1;
+        } else {
+            counts.1 += 1;
             continue;
         }
+
         let (slot, index) = match parse_slot_index(udp_payload) {
             Some(v) => v,
             None => continue,
@@ -152,6 +160,25 @@ pub fn run(pcap: &Path, feed_args: &[(Ipv4Addr, String)], min_matched: u64) -> R
         fmt_num(shreds_parsed),
         fmt_num(pairs_matched),
     );
+    println!();
+
+    // ─── Shred composition ───────────────────────────────────────────────────
+    println!(
+        "  {:<24}  {:>12}  {:>12}  {:>8}",
+        "FEED", "DATA", "CODING", "COD%",
+    );
+    println!("  {}", "-".repeat(62));
+    let mut comp_feeds: Vec<String> = composition.keys().cloned().collect();
+    comp_feeds.sort();
+    for feed in &comp_feeds {
+        let (data, coding) = composition[feed];
+        let total = data + coding;
+        let cod_pct = if total > 0 { 100.0 * coding as f64 / total as f64 } else { 0.0 };
+        println!(
+            "  {:<24}  {:>12}  {:>12}  {:>7.1}%",
+            feed, fmt_num(data), fmt_num(coding), cod_pct,
+        );
+    }
     println!();
 
     if pairs_matched < min_matched {
