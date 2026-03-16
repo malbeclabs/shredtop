@@ -540,6 +540,101 @@ impl ShredReceiver {
         }
     }
 
+    /// Spawn a thread that auto-detects the DoubleZero heartbeat port by
+    /// sniffing the interface, then listens on it permanently. DZ sends
+    /// heartbeats on the same multicast group but a different UDP port than
+    /// shred data, so the main receiver socket never sees them.
+    ///
+    /// If `heartbeat_port` is `Some`, skips detection and uses that port.
+    /// Otherwise probes the interface for up to 5 seconds with `AF_PACKET`,
+    /// falling back to port 5765 if no heartbeat is detected.
+    pub fn spawn_heartbeat_listener(
+        multicast_addr: String,
+        interface: String,
+        metrics: Arc<SourceMetrics>,
+        name: &'static str,
+        heartbeat_port: Option<u16>,
+    ) -> Result<std::thread::JoinHandle<()>> {
+        let handle = std::thread::Builder::new()
+            .name(format!("{}-heartbeat", name))
+            .spawn(move || {
+                let port = heartbeat_port.unwrap_or_else(|| {
+                    eprintln!("{name}: probing {interface} for DZ heartbeat port...");
+                    match detect_heartbeat_port(&interface) {
+                        Some(p) => {
+                            eprintln!("{name}: detected DZ heartbeat on port {p}");
+                            p
+                        }
+                        None => {
+                            eprintln!(
+                                "{name}: no DZ heartbeat detected on {interface}, \
+                                 falling back to port 5765"
+                            );
+                            5765
+                        }
+                    }
+                });
+
+                let mcast_addr: Ipv4Addr = match multicast_addr.parse() {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("{name}: heartbeat: bad multicast addr: {e}");
+                        return;
+                    }
+                };
+                let iface_addr = match Self::resolve_interface_addr(&interface) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("{name}: heartbeat: resolve interface: {e}");
+                        return;
+                    }
+                };
+                let socket = match Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("{name}: heartbeat: socket create: {e}");
+                        return;
+                    }
+                };
+                socket.set_reuse_address(true).ok();
+                socket.set_recv_buffer_size(64 * 1024).ok();
+                let bind_addr = SocketAddrV4::new(mcast_addr, port);
+                if let Err(e) = socket.bind(&bind_addr.into()) {
+                    eprintln!("{name}: heartbeat bind {mcast_addr}:{port}: {e}");
+                    return;
+                }
+                if let Err(e) = socket.join_multicast_v4(&mcast_addr, &iface_addr) {
+                    eprintln!("{name}: heartbeat join multicast: {e}");
+                    return;
+                }
+
+                eprintln!("{name}: heartbeat listener on {multicast_addr}:{port}");
+                let mut buf = [0u8; 64];
+                loop {
+                    let buf_uninit: &mut [std::mem::MaybeUninit<u8>] = unsafe {
+                        std::slice::from_raw_parts_mut(buf.as_mut_ptr() as _, buf.len())
+                    };
+                    match socket.recv(buf_uninit) {
+                        Ok(n) if n >= 4 => {
+                            if buf[0] == 0x44
+                                && buf[1] == 0x5A
+                                && buf[2] == 0x00
+                                && buf[3] == 0x01
+                            {
+                                metrics.last_heartbeat_ns.store(
+                                    crate::metrics::now_ns(),
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            })?;
+
+        Ok(handle)
+    }
+
     fn resolve_interface_addr(interface: &str) -> Result<Ipv4Addr> {
         #[cfg(target_os = "linux")]
         {
@@ -577,6 +672,125 @@ impl ShredReceiver {
             Ok(Ipv4Addr::LOCALHOST)
         }
     }
+}
+
+/// Sniff the interface with `AF_PACKET` for up to 5 seconds looking for
+/// DoubleZero heartbeat packets (4-byte UDP, magic `DZ\x00\x01`).
+/// Returns the UDP destination port if found.
+#[cfg(target_os = "linux")]
+fn detect_heartbeat_port(interface: &str) -> Option<u16> {
+    use std::time::{Duration, Instant};
+
+    const PROBE_SECS: u64 = 5;
+
+    // AF_PACKET + SOCK_DGRAM: all IP frames on the interface, link header stripped.
+    let sock = unsafe {
+        libc::socket(
+            libc::AF_PACKET,
+            libc::SOCK_DGRAM,
+            (libc::ETH_P_IP as u16).to_be() as libc::c_int,
+        )
+    };
+    if sock < 0 {
+        return None;
+    }
+
+    // Look up interface index.
+    let ifindex = {
+        let mut ifr: libc::ifreq = unsafe { std::mem::zeroed() };
+        let name = interface.as_bytes();
+        let n = name.len().min(libc::IFNAMSIZ - 1);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                name.as_ptr(),
+                ifr.ifr_name.as_mut_ptr() as *mut u8,
+                n,
+            );
+            if libc::ioctl(sock, libc::SIOCGIFINDEX, &ifr) < 0 {
+                libc::close(sock);
+                return None;
+            }
+            ifr.ifr_ifru.ifru_ifindex
+        }
+    };
+
+    // Bind to the interface.
+    let mut sll: libc::sockaddr_ll = unsafe { std::mem::zeroed() };
+    sll.sll_family = libc::AF_PACKET as u16;
+    sll.sll_protocol = (libc::ETH_P_IP as u16).to_be();
+    sll.sll_ifindex = ifindex;
+    unsafe {
+        if libc::bind(
+            sock,
+            &sll as *const _ as _,
+            std::mem::size_of_val(&sll) as u32,
+        ) < 0
+        {
+            libc::close(sock);
+            return None;
+        }
+    }
+
+    // Recv timeout — slightly longer than probe window so the loop's
+    // Instant check is the effective deadline.
+    let tv = libc::timeval { tv_sec: (PROBE_SECS + 1) as libc::time_t, tv_usec: 0 };
+    unsafe {
+        libc::setsockopt(
+            sock,
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            &tv as *const _ as _,
+            std::mem::size_of_val(&tv) as u32,
+        );
+    }
+
+    let mut buf = [0u8; 2048];
+    let deadline = Instant::now() + Duration::from_secs(PROBE_SECS);
+
+    let result = loop {
+        if Instant::now() >= deadline {
+            break None;
+        }
+        let n = unsafe { libc::recv(sock, buf.as_mut_ptr() as _, buf.len(), 0) };
+        if n <= 0 {
+            break None;
+        }
+        let n = n as usize;
+
+        // IP header: byte 0 low nibble = IHL (words), byte 9 = protocol.
+        if n < 28 {
+            continue; // 20 (IP min) + 8 (UDP hdr)
+        }
+        let ihl = ((buf[0] & 0x0F) as usize) * 4;
+        if buf[9] != 17 || n < ihl + 12 {
+            continue; // not UDP or too short
+        }
+
+        // UDP header at offset ihl: src_port(2) dst_port(2) length(2) checksum(2).
+        let dst_port = u16::from_be_bytes([buf[ihl + 2], buf[ihl + 3]]);
+        let udp_len = u16::from_be_bytes([buf[ihl + 4], buf[ihl + 5]]) as usize;
+        let payload_start = ihl + 8;
+        let payload_len = udp_len.saturating_sub(8);
+
+        if payload_len == 4
+            && n >= payload_start + 4
+            && buf[payload_start] == 0x44
+            && buf[payload_start + 1] == 0x5A
+            && buf[payload_start + 2] == 0x00
+            && buf[payload_start + 3] == 0x01
+        {
+            break Some(dst_port);
+        }
+    };
+
+    unsafe { libc::close(sock); }
+    result
+}
+
+/// Non-Linux stub — heartbeat detection requires `AF_PACKET`.
+#[cfg(not(target_os = "linux"))]
+fn detect_heartbeat_port(_interface: &str) -> Option<u16> {
+    None
 }
 
 /// Sample CLOCK_REALTIME − CLOCK_MONOTONIC_RAW once at startup.

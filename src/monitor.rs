@@ -458,6 +458,7 @@ pub fn build_source(
                 pin_decode_core: entry.pin_decode_core,
                 shred_version: entry.shred_version,
                 capture_tx,
+                heartbeat_port: entry.heartbeat_port,  // None = auto-detect
             })
         }
         "rpc" => {

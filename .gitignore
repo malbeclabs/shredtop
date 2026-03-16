@@ -1,5 +1,6 @@
 /target/
 Cargo.lock
+.claude
 
 # Local / sensitive — do not commit
 .env
