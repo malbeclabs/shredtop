@@ -417,8 +417,14 @@ impl ShredDecoder {
             // A jump larger than MAX_SLOT_JUMP would poison highest_slot and
             // cause all subsequent real shreds to fail the expiry check below,
             // silently dropping all output until restart.
+            //
+            // Exception: highest_slot == 0 means we haven't seen any valid shred yet.
+            // The first real shred sets the baseline regardless of slot distance
+            // (mainnet slots are ~350_000_000, which exceeds MAX_SLOT_JUMP from 0).
             const MAX_SLOT_JUMP: u64 = 1000;
-            if slot > highest_slot && slot.saturating_sub(highest_slot) <= MAX_SLOT_JUMP {
+            if slot > highest_slot
+                && (highest_slot == 0 || slot.saturating_sub(highest_slot) <= MAX_SLOT_JUMP)
+            {
                 highest_slot = slot;
                 slots.retain(|&s, state| {
                     if s + SLOT_EXPIRY_DISTANCE >= highest_slot {
