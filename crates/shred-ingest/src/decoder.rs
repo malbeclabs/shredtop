@@ -863,7 +863,7 @@ mod tests {
         const M: usize = 2;
         const SZ: usize = 64;
 
-        let mut original: Vec<Vec<u8>> = vec![vec![1u8; SZ], vec![2u8; SZ]];
+        let original: Vec<Vec<u8>> = vec![vec![1u8; SZ], vec![2u8; SZ]];
         let rs = ReedSolomon::new(N, M).unwrap();
         let mut all_shards: Vec<Vec<u8>> = original.clone();
         all_shards.push(vec![0u8; SZ]);
