@@ -149,7 +149,7 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
 
     // Header
     out.push(color::bold(&"=".repeat(W)));
-    out.push(color::bold_cyan(&format!("{:^W$}", format!("  SHREDTOP FEED QUALITY  {}  ", time_str))));
+    out.push(color::bold_cyan(&format!("{:^W$}", format!("  SHREDTOP  {}  ", time_str))));
     out.push(color::bold(&"=".repeat(W)));
     out.push(color::dim(&format!("  Started: {}   Uptime: {}", started_str, uptime_str)));
     out.push(String::new());
@@ -165,6 +165,83 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // SHRED RACE — primary signal, shown first
+    // -----------------------------------------------------------------------
+    out.push(color::bold(&format!(
+        "SHRED RACE  validator \u{2192} this machine  (since start):"
+    )));
+    out.push(String::new());
+    let race_pairs = entry["shred_race"].as_array();
+    let has_race = race_pairs.map(|p| !p.is_empty()).unwrap_or(false);
+    if !has_race {
+        out.push(color::dim(
+            "  No races yet — waiting for same slot to appear on multiple shred feeds.",
+        ));
+    } else {
+        out.push(color::bold(&format!(
+            "  {:<22}  {:>7}  {:>9}  {:>10}  {:>9}  {:>9}",
+            "CONTENDER", "WIN%", "RACES", "FASTER BY", "LEAD p50", "LEAD p95",
+        )));
+        out.push(color::dim(&format!("  {}", "-".repeat(W - 2))));
+        let mut pairs: Vec<&serde_json::Value> = race_pairs.unwrap().iter().collect();
+        pairs.sort_by(|a, b| {
+            let ma = a["total_matched"].as_u64().unwrap_or(0);
+            let mb = b["total_matched"].as_u64().unwrap_or(0);
+            mb.cmp(&ma)
+        });
+        for (i, p) in pairs.iter().enumerate() {
+            if i > 0 {
+                out.push(color::dim("  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"));
+            }
+            let sa = p["source_a"].as_str().unwrap_or("?");
+            let sb = p["source_b"].as_str().unwrap_or("?");
+            let matched = p["total_matched"].as_u64().unwrap_or(0);
+            let a_pct = p["a_win_pct"].as_f64().unwrap_or(0.0);
+            let b_pct = 100.0 - a_pct;
+            let (faster, f_pct, slower, s_pct) = if a_pct >= b_pct {
+                (sa, a_pct, sb, b_pct)
+            } else {
+                (sb, b_pct, sa, a_pct)
+            };
+            let avg_str = p["lead_mean_us"]
+                .as_f64()
+                .map(|v| format!("+{:.2}ms", v / 1000.0))
+                .unwrap_or_else(|| "—".into());
+            let p50_str = p["lead_p50_us"]
+                .as_f64()
+                .map(|v| format!("+{:.1}ms", v / 1000.0))
+                .unwrap_or_else(|| "—".into());
+            let p95_str = p["lead_p95_us"]
+                .as_f64()
+                .map(|v| format!("+{:.1}ms", v / 1000.0))
+                .unwrap_or_else(|| "—".into());
+            out.push(color::green(&format!(
+                "  {:<22}  {:>6.1}%  {:>9}  {:>10}  {:>9}  {:>9}",
+                faster, f_pct, format_num(matched), avg_str, p50_str, p95_str,
+            )));
+            out.push(color::dim(&format!(
+                "  {:<22}  {:>6.1}%  {:>9}  {:>10}  {:>9}  {:>9}",
+                slower, s_pct, "—", "—", "—", "—",
+            )));
+        }
+    }
+    out.push(String::new());
+    out.push(color::dim(
+        "  Matched on (slot, shred_index) \u{2014} when the same shred arrives on both feeds, records",
+    ));
+    out.push(color::dim(
+        "  which relay delivered it first and by how much. Timing uses the kernel UDP receive",
+    ));
+    out.push(color::dim(
+        "  timestamp (SO_TIMESTAMPNS), before any userspace processing.",
+    ));
+    out.push(String::new());
+
+    // -----------------------------------------------------------------------
+    // Per-source feed table
+    // -----------------------------------------------------------------------
 
     // Column headers — BEAT%/LEAD columns only shown when a baseline exists
     if has_rpc {
@@ -300,96 +377,22 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
 
     out.push(color::dim(&"-".repeat(W)));
 
-    // Shred race section — directly under the feed table, before edge assessment
-    out.push(String::new());
-    out.push(color::bold(&format!(
-        "SHRED RACE  validator \u{2192} this machine  (since start):"
-    )));
-    let race_pairs = entry["shred_race"].as_array();
-    let has_race = race_pairs.map(|p| !p.is_empty()).unwrap_or(false);
-    if !has_race {
-        out.push(color::dim(
-            "  No races yet — waiting for same slot to appear on multiple shred feeds.",
-        ));
-    } else {
-        out.push(color::bold(&format!(
-            "  {:<22}  {:>7}  {:>9}  {:>10}  {:>9}  {:>9}",
-            "CONTENDER", "WIN%", "RACES", "FASTER BY", "LEAD p50", "LEAD p95",
-        )));
-        let mut pairs: Vec<&serde_json::Value> = race_pairs.unwrap().iter().collect();
-        pairs.sort_by(|a, b| {
-            let ma = a["total_matched"].as_u64().unwrap_or(0);
-            let mb = b["total_matched"].as_u64().unwrap_or(0);
-            mb.cmp(&ma)
-        });
-        for (i, p) in pairs.iter().enumerate() {
-            if i > 0 {
-                out.push("  \u{00b7}\u{00b7}\u{00b7}\u{00b7}\u{00b7}".into());
-            }
-            let sa = p["source_a"].as_str().unwrap_or("?");
-            let sb = p["source_b"].as_str().unwrap_or("?");
-            let matched = p["total_matched"].as_u64().unwrap_or(0);
-            let a_pct = p["a_win_pct"].as_f64().unwrap_or(0.0);
-            let b_pct = 100.0 - a_pct;
-            let (faster, f_pct, slower, s_pct) = if a_pct >= b_pct {
-                (sa, a_pct, sb, b_pct)
-            } else {
-                (sb, b_pct, sa, a_pct)
-            };
-            let avg_str = p["lead_mean_us"]
-                .as_f64()
-                .map(|v| format!("+{:.2}ms", v / 1000.0))
-                .unwrap_or_else(|| "—".into());
-            let p50_str = p["lead_p50_us"]
-                .as_f64()
-                .map(|v| format!("+{:.1}ms", v / 1000.0))
-                .unwrap_or_else(|| "—".into());
-            let p95_str = p["lead_p95_us"]
-                .as_f64()
-                .map(|v| format!("+{:.1}ms", v / 1000.0))
-                .unwrap_or_else(|| "—".into());
-            out.push(color::green(&format!(
-                "  {:<22}  {:>6.1}%  {:>9}  {:>10}  {:>9}  {:>9}",
-                faster, f_pct, format_num(matched), avg_str, p50_str, p95_str,
-            )));
-            out.push(color::dim(&format!(
-                "  {:<22}  {:>6.1}%  {:>9}  {:>10}  {:>9}  {:>9}",
-                slower, s_pct, "—", "—", "—", "—",
-            )));
-        }
-    }
-    out.push(String::new());
-    out.push(color::dim(
-        "  Matched on (slot, shred_index) \u{2014} when the same shred arrives on both feeds, records",
-    ));
-    out.push(color::dim(
-        "  which relay delivered it first and by how much. Timing uses the kernel UDP receive",
-    ));
-    out.push(color::dim(
-        "  timestamp (SO_TIMESTAMPNS), before any userspace processing.",
-    ));
-
-    out.push(String::new());
-
-    // Edge assessment
-    out.push(color::bold("EDGE ASSESSMENT:"));
-    if edge_lines.is_empty() {
-        if !has_rpc {
-            out.push(color::yellow(
-                "  Shred-race-only mode — BEAT%/LEAD require a baseline source. Run `shredtop discover` to add one.",
-            ));
-        } else {
+    // Edge assessment — only shown when a baseline is configured
+    if has_rpc {
+        out.push(String::new());
+        out.push(color::bold("EDGE ASSESSMENT:"));
+        if edge_lines.is_empty() {
             out.push(color::dim(
                 "  Warming up — lead times appear once transactions match across feeds.",
             ));
+        } else {
+            for line in &edge_lines {
+                out.push(line.clone());
+            }
         }
-    } else {
-        for line in &edge_lines {
-            out.push(line.clone());
-        }
+        out.push(String::new());
     }
 
-    out.push(String::new());
     out.push(color::dim(&"-".repeat(W)));
     if has_rpc {
         out.push(color::dim(
@@ -399,7 +402,7 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
     } else {
         out.push(color::dim(
             "LINK = DZ heartbeat (OK ≤10s / STALE ≤60s / DEAD)  COV% = block shreds received  \
-             (add a baseline to unlock BEAT%/LEAD columns)",
+             WIN% = race wins vs other shred feeds  LEAD = lead over slower feed  p50/p95 = percentiles",
         ));
     }
 

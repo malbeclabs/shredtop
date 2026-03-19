@@ -1,26 +1,27 @@
 # shredtop
 
-Measures the latency advantage of raw Solana shred feeds over confirmed-block RPC.
+Measures which Solana shred feed delivers each shred to your machine first, and by how much.
 
-If your business depends on seeing transactions before your competitors, shredtop gives you an estimate of how many milliseconds ahead you are, and whether that edge is holding.
+If your business depends on seeing transactions before your competitors, shredtop shows you which feed is winning, by how many microseconds, and whether that edge is holding.
 
 ```
 ====================================================================================================
-                      SHREDTOP FEED QUALITY  2026-02-25 23:27:33 UTC
+                      SHREDTOP  2026-03-19 11:42:07 UTC
 ====================================================================================================
 
-SOURCE               SHREDS/s   COV%  TXS/s   BEAT%   LEAD avg   LEAD p50   LEAD p95   LEAD p99
-----------------------------------------------------------------------------------------------------
-bebop                       0      —      0       —          —          —          —          —
-jito-shredstream        52585   100%     22    100%   +629.8ms   +598.3ms   +890.1ms  +1124.5ms
-rpc                         —      —   4065       —   baseline          —          —          —
-----------------------------------------------------------------------------------------------------
+SHRED RACE  validator → this machine  (since start):
 
-EDGE ASSESSMENT:
-  ✓  jito-shredstream    AHEAD of RPC  by 629.82ms avg  (10219 samples)
+  CONTENDER              WIN%      RACES   FASTER BY    LEAD p50   LEAD p95
+  ----------------------------------------------------------------------------------------------------
+  bebop                  91.0%    14,823   +0.19ms      +0.1ms     +0.7ms
+  jito-shredstream        9.0%         —         —           —          —
 
+SOURCE               LINK    SHREDS/s   COV%  TXS/s
 ----------------------------------------------------------------------------------------------------
-COV% = block shreds received  BEAT% = % of matched txs where feed beat RPC  LEAD = ms before RPC confirms  p50/p95/p99 = percentiles
+bebop                  OK        4200   98%     420
+jito-shredstream       OK        3900   97%     380
+----------------------------------------------------------------------------------------------------
+WIN% = race wins vs other shred feeds  LEAD = lead over slower feed  p50/p95 = percentiles
 ```
 
 ---
@@ -31,13 +32,12 @@ Solana leaders distribute blocks as shreds over UDP. Feed providers relay those 
 
 shredtop:
 
-1. Binds a UDP socket on your multicast interface and receives raw shreds
-2. Parses the Agave wire format, runs Reed-Solomon FEC recovery on partial FEC sets
-3. Deserializes `Entry` structs via bincode to extract transactions
-4. Polls a baseline source (RPC, Yellowstone Geyser, or Jito gRPC proxy) for confirmed transactions in parallel
-5. Matches transactions across sources by `signatures[0]`, computes arrival time deltas
+1. Binds a UDP socket on each shred feed and timestamps every arriving shred with the kernel UDP receive timestamp (`SO_TIMESTAMPNS`) — before any userspace processing
+2. When the same `(slot, shred_index)` pair arrives on multiple feeds, records which feed delivered it first and by how many microseconds — this is the **shred race**
+3. Parses the Agave wire format, runs Reed-Solomon FEC recovery on partial FEC sets, and deserializes `Entry` structs via bincode to extract transactions
+4. _(Optional)_ Polls a baseline source (RPC, Yellowstone Geyser, or Jito gRPC proxy) for confirmed transactions and matches by `signatures[0]` to compute **lead time vs RPC**
 
-Lead time = `T_rpc_confirmed − T_shred_received`. Positive means you were ahead.
+Race lead time = `T_slower_feed − T_faster_feed` at the kernel socket layer. RPC lead time = `T_rpc_confirmed − T_shred_received`. Both positive means you were ahead.
 
 All timestamps use `CLOCK_MONOTONIC_RAW` (Linux) — immune to NTP slew.
 
@@ -103,8 +103,8 @@ flowchart LR
 ## Requirements
 
 - Linux x86_64
-- A shred feed (DoubleZero, Jito ShredStream UDP, or Jito gRPC proxy)
-- A baseline source: local Solana RPC node, Yellowstone Geyser endpoint, or Jito ShredStream gRPC proxy
+- Two or more shred feeds (DoubleZero, Jito ShredStream UDP, or Jito gRPC proxy) — one feed is enough to collect data; the race requires at least two
+- A baseline source (optional): local Solana RPC node, Yellowstone Geyser endpoint, or Jito ShredStream gRPC proxy — only needed for BEAT%/LEAD vs RPC columns
 - Rust 1.81+ _(build from source only)_
 
 ---
@@ -261,16 +261,29 @@ Live dashboard reading from the service metrics log. Refreshes every `N` seconds
 
 Requires `shredtop service start` to be running first.
 
+**SHRED RACE columns** (feed-vs-feed, always shown):
+
 | Column | Meaning |
 |--------|---------|
+| `WIN%` | Fraction of matched shreds where this feed delivered first |
+| `RACES` | Total `(slot, shred_index)` pairs matched across both feeds |
+| `FASTER BY` | Mean lead time of the winning feed over the losing feed |
+| `LEAD p50` | Median lead — typical per-shred advantage |
+| `LEAD p95` | 95th percentile lead — good worst-case advantage |
+
+**Per-source feed table columns**:
+
+| Column | Meaning |
+|--------|---------|
+| `LINK` | DZ heartbeat freshness: `OK` ≤10s / `STALE` ≤60s / `DEAD` |
 | `SHREDS/s` | Raw UDP packets received per second |
 | `COV%` | Fraction of each block's data shreds that arrived |
 | `TXS/s` | Decoded transactions per second |
-| `BEAT%` | Of transactions seen by both this feed and RPC, % where this feed arrived first |
-| `LEAD avg` | Mean arrival advantage over RPC in milliseconds |
-| `LEAD p50` | Median lead time — typical transaction advantage |
-| `LEAD p95` | 95th percentile — good worst-case lead time |
-| `LEAD p99` | 99th percentile — true worst-case lead time |
+| `BEAT%` | Of transactions seen by both this feed and RPC, % where this feed arrived first _(requires baseline)_ |
+| `LEAD avg` | Mean arrival advantage over RPC in milliseconds _(requires baseline)_ |
+| `LEAD p50` | Median lead time vs RPC — typical transaction advantage _(requires baseline)_ |
+| `LEAD p95` | 95th percentile lead vs RPC _(requires baseline)_ |
+| `LEAD p99` | 99th percentile lead vs RPC _(requires baseline)_ |
 
 ### `shredtop status`
 
@@ -346,11 +359,13 @@ shredtop upgrade --source  # pull main and rebuild from source
 
 ## Understanding the numbers
 
+**Shred race WIN%** — fraction of matched shreds where one feed arrived first. With two healthy feeds on similar routes, expect 55–75% for the faster provider. 90%+ indicates a clear routing or peering advantage.
+
+**Shred race LEAD** — kernel-layer timing gap between feeds for the same `(slot, shred_index)`. Measured at `SO_TIMESTAMPNS` before any userspace processing. p50 is the typical per-shred advantage; p95 is a good worst-case. A stable positive lead at p95 means the faster feed is consistently ahead even in adverse conditions.
+
 **Coverage %** — Some feed providers relay only the tail FEC sets of each block, not the full block. 80–90% coverage is normal and expected. shredtop handles mid-stream joins correctly (no waiting for shred index 0).
 
-**Win rate %** — how often this source delivers a transaction before all other sources. With two shred feeds and one RPC, a healthy setup shows the faster shred source winning 55–65% of transactions.
-
-**Lead time** — samples outside `[−500ms, +2000ms]` are discarded as measurement artifacts (e.g. RPC retry delays). The displayed avg/p50/p95/p99 reflect real network latency only. p50 is the median (typical transaction), p99 is the worst-case you'll see in practice.
+**Lead time vs RPC** _(requires baseline source)_ — samples outside `[−500ms, +2000ms]` are discarded as measurement artifacts (e.g. RPC retry delays). The displayed avg/p50/p95/p99 reflect real network latency only. p50 is the median (typical transaction), p99 is the worst-case you'll see in practice.
 
 **FEC recovery** — when data shreds are dropped in transit, Reed-Solomon coding shreds allow reconstruction. A non-zero FEC-REC count is normal; a high count relative to SHREDS/s may indicate packet loss on the multicast path.
 
