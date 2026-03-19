@@ -5,12 +5,14 @@
 //! and coverage percentage.
 
 use anyhow::Result;
+use chrono::Utc;
 use serde::Serialize;
-use shred_ingest::{DecodedTx, FanInSource, SourceMetricsSnapshot};
+use shred_ingest::{DecodedTx, FanInSource, ShredPairSnapshot, SourceMetricsSnapshot};
 use shred_ingest::source_metrics::SlotStats;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::color;
 use crate::config::ProbeConfig;
 use crate::monitor::build_source;
 
@@ -18,6 +20,7 @@ use crate::monitor::build_source;
 pub struct BenchReport {
     pub duration_secs: u64,
     pub sources: Vec<SourceReport>,
+    pub shred_race: Vec<ShredPairSnapshot>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,7 +71,7 @@ pub fn run(config: &ProbeConfig, duration_secs: u64, output: Option<PathBuf>) ->
     }
 
     let (out_tx, out_rx) = crossbeam_channel::bounded::<DecodedTx>(4096);
-    let (all_metrics, _race_tracker, _handles) = fan_in.start(out_tx);
+    let (all_metrics, race_tracker, _handles) = fan_in.start(out_tx);
 
     // Drain thread
     std::thread::spawn(move || {
@@ -92,42 +95,148 @@ pub fn run(config: &ProbeConfig, duration_secs: u64, output: Option<PathBuf>) ->
     let elapsed_secs = start.elapsed().as_secs_f64();
     let snapshots: Vec<SourceMetricsSnapshot> = all_metrics.iter().map(|m| m.snapshot()).collect();
 
+    let race_snaps = race_tracker.snapshots();
+
     let report = BenchReport {
         duration_secs,
         sources: snapshots
             .iter()
             .map(|s| source_report(s, elapsed_secs))
             .collect(),
+        shred_race: race_snaps,
     };
 
     let json = serde_json::to_string_pretty(&report)?;
 
-    match output {
+    // Formatted human-readable report — stderr if --output, stdout otherwise
+    let time_str = Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    let header_title = format!(" SHREDTOP BENCH REPORT  {}s  {} ", duration_secs, time_str);
+    let width = 100;
+    let report_lines = format_report(&report, &header_title, width);
+
+    match &output {
         Some(path) => {
-            std::fs::write(&path, &json)?;
-            eprintln!("Report written to {}", path.display());
+            std::fs::write(path, &json)?;
+            for line in &report_lines {
+                eprintln!("{}", line);
+            }
+            eprintln!("{}", color::dim(&format!("Report written to {}", path.display())));
         }
         None => {
+            for line in &report_lines {
+                println!("{}", line);
+            }
             println!("{}", json);
         }
     }
 
-    // Also print a human-readable summary to stderr
-    eprintln!();
-    eprintln!("=== BENCH SUMMARY ({:.0}s) ===", elapsed_secs);
-    for s in &report.sources {
-        eprintln!(
-            "  {}  shreds/s={:.0}  coverage={}  win={}  lead={} µs  fec-rec={}",
-            s.name,
-            s.shreds_per_sec,
-            s.coverage_pct.map(|p| format!("{:.0}%", p)).unwrap_or("—".into()),
-            s.win_rate_pct.map(|p| format!("{:.0}%", p)).unwrap_or("—".into()),
-            s.lead_time_mean_us.map(|u| format!("{:+.0}", u)).unwrap_or("—".into()),
-            s.fec_recovered_shreds,
-        );
-    }
-
     Ok(())
+}
+
+fn format_report(report: &BenchReport, header_title: &str, width: usize) -> Vec<String> {
+    let sep = "=".repeat(width);
+    let thin = "-".repeat(width);
+    let mut lines: Vec<String> = Vec::new();
+
+    lines.push(color::bold(&sep));
+    lines.push(color::bold_cyan(&format!("{:^width$}", header_title)));
+    lines.push(color::bold(&sep));
+    lines.push(String::new());
+
+    // SHRED RACE section
+    lines.push(color::bold("SHRED RACE  validator \u{2192} this machine:"));
+    lines.push(String::new());
+
+    let has_race = !report.shred_race.is_empty();
+    if !has_race {
+        lines.push(color::dim(
+            "  No races yet — waiting for same slot to appear on multiple shred feeds.",
+        ));
+    } else {
+        lines.push(color::bold(&format!(
+            "  {:<22}  {:>7}  {:>9}  {:>10}  {:>9}  {:>9}",
+            "CONTENDER", "WIN%", "RACES", "FASTER BY", "LEAD p50", "LEAD p95",
+        )));
+        lines.push(color::dim(&format!("  {}", "-".repeat(width - 2))));
+
+        let mut pairs: Vec<&ShredPairSnapshot> = report.shred_race.iter().collect();
+        pairs.sort_by(|a, b| b.total_matched.cmp(&a.total_matched));
+
+        for p in &pairs {
+            let a_pct = p.a_win_pct;
+            let b_pct = 100.0 - a_pct;
+            let (faster, f_pct, slower, s_pct) = if a_pct >= b_pct {
+                (p.source_a, a_pct, p.source_b, b_pct)
+            } else {
+                (p.source_b, b_pct, p.source_a, a_pct)
+            };
+            let avg_str = p
+                .lead_mean_us
+                .map(|v| format!("+{:.2}ms", v / 1000.0))
+                .unwrap_or_else(|| "\u{2014}".into());
+            let p50_str = p
+                .lead_p50_us
+                .map(|v| format!("+{:.1}ms", v as f64 / 1000.0))
+                .unwrap_or_else(|| "\u{2014}".into());
+            let p95_str = p
+                .lead_p95_us
+                .map(|v| format!("+{:.1}ms", v as f64 / 1000.0))
+                .unwrap_or_else(|| "\u{2014}".into());
+
+            lines.push(color::green(&format!(
+                "  {:<22}  {:>6.1}%  {:>9}  {:>10}  {:>9}  {:>9}",
+                faster,
+                f_pct,
+                format_num(p.total_matched),
+                avg_str,
+                p50_str,
+                p95_str,
+            )));
+            lines.push(color::dim(&format!(
+                "  {:<22}  {:>6.1}%  {:>9}  {:>10}  {:>9}  {:>9}",
+                slower, s_pct, "\u{2014}", "\u{2014}", "\u{2014}", "\u{2014}",
+            )));
+        }
+    }
+    lines.push(String::new());
+
+    // SOURCE table
+    lines.push(color::bold(&format!(
+        "{:<20}  {:>9}  {:>5}  {:>7}",
+        "SOURCE", "SHREDS/s", "COV%", "TXS/s",
+    )));
+    lines.push(color::dim(&thin));
+    for s in &report.sources {
+        let shreds = format!("{:.0}", s.shreds_per_sec);
+        let cov = s
+            .coverage_pct
+            .map(|p| format!("{:.0}%", p.min(100.0)))
+            .unwrap_or_else(|| "\u{2014}".into());
+        let txs = format!("{:.0}", s.txs_per_sec);
+        lines.push(format!(
+            "{:<20}  {:>9}  {:>5}  {:>7}",
+            s.name, shreds, cov, txs,
+        ));
+    }
+    lines.push(color::dim(&thin));
+    lines.push(color::dim(
+        "LEAD = kernel SO_TIMESTAMPNS delta between feeds  p50/p95 = percentiles  RACES = matched (slot,idx) pairs",
+    ));
+    lines.push(String::new());
+
+    lines
+}
+
+fn format_num(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out.chars().rev().collect()
 }
 
 fn source_report(s: &SourceMetricsSnapshot, elapsed_secs: f64) -> SourceReport {
