@@ -477,13 +477,9 @@ impl FanInSource {
                                     // First=rpc, current=shred
                                     (decoded.shred_recv_ns, first.recv_ns)
                                 } else {
-                                    // Both same type — compare timestamps directly
-                                    // (shred vs shred: measures relative lead between feeds)
-                                    if !source_is_rpc {
-                                        (decoded.shred_recv_ns, first.recv_ns)
-                                    } else {
-                                        continue; // rpc vs rpc: skip
-                                    }
+                                    // Same tier (both shred or both rpc) — skip.
+                                    // Shred-vs-shred timing is handled by ShredRaceTracker.
+                                    continue;
                                 };
 
                                 let lead_us = (rpc_ns as i64 - shred_ns as i64) / 1000;
