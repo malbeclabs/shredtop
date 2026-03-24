@@ -389,7 +389,7 @@ pub struct FanInSource {
 
 impl FanInSource {
     pub fn new() -> Self {
-        Self { sources: Vec::new(), filter_programs: Vec::new(), max_race_delta_us: 5_000 }
+        Self { sources: Vec::new(), filter_programs: Vec::new(), max_race_delta_us: 1_000 }
     }
 
     pub fn add_source(&mut self, source: Box<dyn TxSource>, metrics: Arc<SourceMetrics>) {

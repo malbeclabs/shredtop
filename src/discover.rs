@@ -343,7 +343,7 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
             filter_programs: Vec::new(),
             capture: capture_cfg,
             metrics: crate::config::MetricsConfig::default(),
-            max_race_delta_ms: 5,
+            max_race_delta_ms: 1,
         };
         let toml_str = toml::to_string_pretty(&cfg)?;
         std::fs::write(config_path, toml_str)?;

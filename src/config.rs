@@ -18,15 +18,15 @@ pub struct ProbeConfig {
     /// Raw shred capture configuration. Omit to disable capture.
     #[serde(default)]
     pub capture: Option<CaptureConfig>,
-    /// Maximum allowed time delta (ms) between two feeds receiving the same shred
-    /// for a race to be recorded. Shreds arriving more than this apart likely came
-    /// from different validators (retransmissions), not the same relay event.
-    /// Default: 5ms. Set to 0 to disable filtering (count all races).
-    #[serde(default = "ProbeConfig::default_max_race_delta_ms")]
-    pub max_race_delta_ms: u32,
     /// Prometheus metrics HTTP endpoint. Omit or set enabled=false to disable.
     #[serde(default)]
     pub metrics: MetricsConfig,
+    /// Maximum time delta (ms) between two feeds receiving the same shred for a
+    /// race to be recorded. Arrivals further apart came from different source
+    /// validators (retransmissions) and are not a valid speed comparison.
+    /// Default: 1ms.
+    #[serde(default = "ProbeConfig::default_max_race_delta_ms")]
+    pub max_race_delta_ms: u32,
 }
 
 /// Configuration for the optional Prometheus metrics HTTP endpoint.
@@ -135,7 +135,7 @@ pub struct SourceEntry {
 }
 
 impl ProbeConfig {
-    fn default_max_race_delta_ms() -> u32 { 5 }
+    fn default_max_race_delta_ms() -> u32 { 1 }
 
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
