@@ -1,135 +1,119 @@
-//! RPC block-polling transaction source.
+//! RPC WebSocket subscription-based transaction source.
 //!
-//! Polls confirmed blocks via the Solana JSON-RPC API every 100ms.
-//! Slower than shred ingestion (~400ms+ behind), but works without a multicast feed.
-//! Used as the baseline comparison source for lead-time measurement.
+//! Subscribes to confirmed transaction logs via `logsSubscribe` WebSocket RPC.
+//! Works without --enable-rpc-transaction-history — uses live push notifications
+//! instead of historical getBlock polling.
+//!
+//! If no WebSocket endpoint is reachable (no local validator, or pure relay
+//! machine), the source reconnects silently in the background. Other sources
+//! are unaffected and LEAD metrics stay null until a connection is established.
 
 use anyhow::Result;
 use crossbeam_channel::Sender;
-use solana_client::rpc_client::RpcClient;
+use futures_util::StreamExt;
+use solana_client::nonblocking::pubsub_client::PubsubClient;
+use solana_client::rpc_config::{RpcTransactionLogsConfig, RpcTransactionLogsFilter};
 use solana_commitment_config::CommitmentConfig;
+use solana_message::{Message as LegacyMessage, VersionedMessage};
+use solana_signature::Signature;
+use solana_transaction::versioned::VersionedTransaction;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::decoder::DecodedTx;
 use crate::metrics;
 use crate::source_metrics::SourceMetrics;
 
-/// Polls confirmed blocks via RPC and emits transactions.
 pub struct RpcSource {
-    rpc: RpcClient,
+    ws_url: String,
     tx: Sender<DecodedTx>,
-    last_slot: u64,
     metrics: Arc<SourceMetrics>,
 }
 
 impl RpcSource {
     pub fn new(rpc_url: &str, tx: Sender<DecodedTx>, metrics: Arc<SourceMetrics>) -> Result<Self> {
-        let rpc = RpcClient::new_with_commitment(
-            rpc_url.to_string(),
-            CommitmentConfig::confirmed(),
-        );
-        let last_slot = rpc.get_slot()?;
-        tracing::info!("RPC source starting at slot {}", last_slot);
-        Ok(Self { rpc, tx, last_slot, metrics })
+        // Convert http(s):// → ws(s):// — same host and port, WebSocket path
+        let ws_url = rpc_url
+            .replacen("https://", "wss://", 1)
+            .replacen("http://", "ws://", 1);
+        tracing::info!("RPC source: will subscribe via {}", ws_url);
+        Ok(Self { ws_url, tx, metrics })
     }
 
-    /// Main polling loop — runs on its own thread
     pub fn run(&mut self) -> Result<()> {
-        tracing::info!("RPC transaction source started (polling mode)");
-        loop {
-            match self.poll_new_slots() {
-                Ok(count) => {
-                    if count > 0 {
-                        tracing::debug!("processed {} transactions from RPC", count);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+
+        rt.block_on(async {
+            loop {
+                match run_logs_subscribe(&self.ws_url, self.tx.clone(), self.metrics.clone()).await {
+                    Ok(()) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "RPC logs subscription '{}' disconnected: {}  reconnecting in 5s",
+                            self.ws_url,
+                            e
+                        );
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("RPC poll error: {}, retrying...", e);
-                    std::thread::sleep(Duration::from_millis(500));
-                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        });
+
+        Ok(())
     }
+}
 
-    fn poll_new_slots(&mut self) -> Result<usize> {
-        let current_slot = self.rpc.get_slot()?;
-        if current_slot <= self.last_slot {
-            return Ok(0);
-        }
+async fn run_logs_subscribe(
+    ws_url: &str,
+    tx: Sender<DecodedTx>,
+    metrics: Arc<SourceMetrics>,
+) -> Result<()> {
+    let pubsub = PubsubClient::new(ws_url).await?;
 
-        let mut total_txs = 0;
-
-        for slot in (self.last_slot + 1)..=current_slot {
-            match self.process_slot(slot) {
-                Ok(count) => total_txs += count,
-                Err(e) => {
-                    tracing::trace!("slot {} not available: {}", slot, e);
-                }
-            }
-        }
-
-        self.last_slot = current_slot;
-        Ok(total_txs)
-    }
-
-    fn process_slot(&self, slot: u64) -> Result<usize> {
-        self.metrics.slots_attempted.fetch_add(1, Relaxed);
-
-        let block = self.rpc.get_block_with_config(
-            slot,
-            solana_client::rpc_config::RpcBlockConfig {
-                encoding: Some(solana_transaction_status::UiTransactionEncoding::Base64),
-                transaction_details: Some(solana_transaction_status::TransactionDetails::Full),
-                rewards: Some(false),
+    let (mut stream, _unsub) = pubsub
+        .logs_subscribe(
+            RpcTransactionLogsFilter::All,
+            RpcTransactionLogsConfig {
                 commitment: Some(CommitmentConfig::confirmed()),
-                max_supported_transaction_version: Some(0),
             },
-        )?;
-        let recv_ts = metrics::now_ns();
+        )
+        .await?;
 
-        let mut count = 0;
+    tracing::info!("RPC logs subscription active on {}", ws_url);
 
-        if let Some(transactions) = block.transactions {
-            for tx_with_meta in transactions {
-                if let Some(decoded) = self.decode_ui_transaction(tx_with_meta, slot, recv_ts) {
-                    let _ = self.tx.try_send(decoded);
-                    count += 1;
-                }
-            }
+    while let Some(response) = stream.next().await {
+        // Skip failed transactions — shred feeds also decode them but we want
+        // the comparison to be meaningful (confirmed successful txs only).
+        if response.value.err.is_some() {
+            continue;
         }
 
-        self.metrics.slots_complete.fetch_add(1, Relaxed);
-        self.metrics.txs_decoded.fetch_add(count as u64, Relaxed);
+        let recv_ns = metrics::now_ns();
+        let slot = response.context.slot;
 
-        Ok(count)
-    }
-
-    fn decode_ui_transaction(
-        &self,
-        tx_with_meta: solana_transaction_status::EncodedTransactionWithStatusMeta,
-        slot: u64,
-        recv_ts: u64,
-    ) -> Option<DecodedTx> {
-        let decode_start = metrics::now_ns();
-        let tx = tx_with_meta.transaction;
-        match tx.decode() {
-            Some(versioned_tx) => {
-                let decode_done = metrics::now_ns();
-                metrics::METRICS.record_stage(
-                    &metrics::METRICS.decode_ns,
-                    decode_done - decode_start,
-                );
-                Some(DecodedTx {
-                    transaction: versioned_tx,
-                    slot,
-                    shred_recv_ns: recv_ts,
-                    decode_done_ns: decode_done,
-                })
-            }
-            None => None,
+        if let Some(decoded) = make_decoded_tx(&response.value.signature, slot, recv_ns) {
+            metrics.txs_decoded.fetch_add(1, Relaxed);
+            metrics.txs_emitted.fetch_add(1, Relaxed);
+            let _ = tx.try_send(decoded);
         }
     }
+
+    anyhow::bail!("logs subscription stream ended")
+}
+
+fn make_decoded_tx(sig_str: &str, slot: u64, recv_ns: u64) -> Option<DecodedTx> {
+    let sig: Signature = sig_str.parse().ok()?;
+    let sig_arr: [u8; 64] = sig.as_ref().try_into().ok()?;
+    let transaction = VersionedTransaction {
+        signatures: vec![Signature::from(sig_arr)],
+        message: VersionedMessage::Legacy(LegacyMessage::default()),
+    };
+    Some(DecodedTx {
+        transaction,
+        slot,
+        shred_recv_ns: recv_ns,
+        decode_done_ns: recv_ns,
+    })
 }
