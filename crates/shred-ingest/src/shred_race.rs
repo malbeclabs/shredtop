@@ -34,6 +34,7 @@ struct ShredFirstArrival {
     recv_ns: u64,
     source: &'static str,
     inserted_ns: u64,
+    matched: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -241,18 +242,22 @@ fn process_arrival(
 
     use dashmap::mapref::entry::Entry;
     match arrivals.entry((slot, idx)) {
-        Entry::Occupied(e) => {
+        Entry::Occupied(mut e) => {
+            // Already raced — this is a retransmission, ignore.
+            if e.get().matched {
+                return;
+            }
             let first_source = e.get().source;
             if first_source == source {
                 // Duplicate from the same feed — ignore.
                 return;
             }
             let first_recv_ns = e.get().recv_ns;
-            e.remove();
 
             // Discard if delta looks like an eviction artifact (>10s).
             let lead_us = ((first_recv_ns as i64) - (recv_ns as i64)).abs() / 1000;
             if lead_us >= 10_000_000 {
+                e.remove();
                 return;
             }
 
@@ -270,9 +275,14 @@ fn process_arrival(
                 .or_insert_with(|| ShredPairMetrics::new(key_a, key_b))
                 .clone();
             pair.record(winner, lead_us);
+
+            // Mark settled — don't remove. Future retransmissions of the same
+            // (slot, idx) hit the matched guard above and return early, matching
+            // shredder's IsNew=false semantics: one race per shred, ever.
+            e.get_mut().matched = true;
         }
         Entry::Vacant(e) => {
-            e.insert(ShredFirstArrival { recv_ns, source, inserted_ns: now });
+            e.insert(ShredFirstArrival { recv_ns, source, inserted_ns: now, matched: false });
         }
     }
 }
