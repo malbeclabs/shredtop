@@ -182,7 +182,11 @@ pub struct ShredRaceTracker {
 }
 
 impl ShredRaceTracker {
-    pub fn new() -> Arc<Self> {
+    /// `max_race_delta_us`: maximum µs between two feeds' arrivals for a race to
+    /// be recorded. Arrivals further apart came from different source validators
+    /// (retransmissions) and are not a valid speed comparison. Pass `u64::MAX`
+    /// to disable filtering.
+    pub fn new(max_race_delta_us: u64) -> Arc<Self> {
         let (tx, rx) = bounded::<ShredArrival>(4096);
         let arrivals: Arc<DashMap<(u64, u32), ShredFirstArrival>> = Arc::new(DashMap::new());
         let pairs: Arc<DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>> =
@@ -195,7 +199,7 @@ impl ShredRaceTracker {
             .name("shred-race-proc".into())
             .spawn(move || {
                 for arrival in &rx {
-                    process_arrival(&arrivals_proc, &pairs_proc, arrival);
+                    process_arrival(&arrivals_proc, &pairs_proc, arrival, max_race_delta_us);
                 }
             })
             .expect("failed to spawn shred-race-proc");
@@ -236,6 +240,7 @@ fn process_arrival(
     arrivals: &DashMap<(u64, u32), ShredFirstArrival>,
     pairs: &DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>,
     arrival: ShredArrival,
+    max_race_delta_us: u64,
 ) {
     let ShredArrival { source, slot, idx, recv_ns } = arrival;
     let now = metrics::now_ns();
@@ -258,6 +263,14 @@ fn process_arrival(
             let lead_us = ((first_recv_ns as i64) - (recv_ns as i64)).abs() / 1000;
             if lead_us >= 10_000_000 {
                 e.remove();
+                return;
+            }
+
+            // If delta exceeds the threshold, the two feeds received this shred
+            // from different source validators (retransmission). Don't record —
+            // but don't remove or mark matched, so a same-source arrival can
+            // still match later.
+            if lead_us > max_race_delta_us as i64 {
                 return;
             }
 

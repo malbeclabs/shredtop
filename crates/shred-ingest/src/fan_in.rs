@@ -381,11 +381,15 @@ pub struct FanInSource {
     /// account keys include at least one of these pubkeys are counted for lead-time.
     /// Applies to shred-tier sources only; RPC-tier sources (is_rpc=true) are exempt.
     pub filter_programs: Vec<String>,
+    /// Maximum µs between two feeds receiving the same shred for a race to be
+    /// recorded. Arrivals further apart likely came from different validators
+    /// (retransmissions). Default: 5000 µs (5ms). Set to u64::MAX to disable.
+    pub max_race_delta_us: u64,
 }
 
 impl FanInSource {
     pub fn new() -> Self {
-        Self { sources: Vec::new(), filter_programs: Vec::new() }
+        Self { sources: Vec::new(), filter_programs: Vec::new(), max_race_delta_us: 5_000 }
     }
 
     pub fn add_source(&mut self, source: Box<dyn TxSource>, metrics: Arc<SourceMetrics>) {
@@ -402,7 +406,7 @@ impl FanInSource {
         let mut all_handles: Vec<JoinHandle<()>> = Vec::new();
         let mut all_metrics: Vec<Arc<SourceMetrics>> = Vec::new();
 
-        let race_tracker = ShredRaceTracker::new();
+        let race_tracker = ShredRaceTracker::new(self.max_race_delta_us);
 
         // Parse filter programs once at start time; shared across relay threads.
         let filter_set: Arc<HashSet<Pubkey>> = Arc::new(
