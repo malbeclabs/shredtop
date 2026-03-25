@@ -21,12 +21,6 @@ pub struct ProbeConfig {
     /// Prometheus metrics HTTP endpoint. Omit or set enabled=false to disable.
     #[serde(default)]
     pub metrics: MetricsConfig,
-    /// Maximum time delta (ms) between two feeds receiving the same shred for a
-    /// race to be recorded. Arrivals further apart came from different source
-    /// validators (retransmissions) and are not a valid speed comparison.
-    /// Default: 1ms.
-    #[serde(default = "ProbeConfig::default_max_race_delta_ms")]
-    pub max_race_delta_ms: u32,
 }
 
 /// Configuration for the optional Prometheus metrics HTTP endpoint.
@@ -135,8 +129,6 @@ pub struct SourceEntry {
 }
 
 impl ProbeConfig {
-    fn default_max_race_delta_ms() -> u32 { 1 }
-
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config file: {}", path.display()))?;
@@ -151,7 +143,6 @@ impl ProbeConfig {
             filter_programs: Vec::new(),
             capture: None,
             metrics: MetricsConfig::default(),
-            max_race_delta_ms: Self::default_max_race_delta_ms(),
             sources: vec![
                 SourceEntry {
                     name: "bebop".into(),

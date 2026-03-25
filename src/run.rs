@@ -103,7 +103,6 @@ pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Resul
 
     let mut fan_in = FanInSource::new();
     fan_in.filter_programs = config.filter_programs.clone();
-    fan_in.max_race_delta_us = config.max_race_delta_ms as u64 * 1_000;
     for entry in &config.sources {
         let (source, metrics) = build_source(entry, cap_tx.clone())?;
         fan_in.add_source(source, metrics);
