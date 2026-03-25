@@ -402,7 +402,8 @@ impl FanInSource {
         let mut all_handles: Vec<JoinHandle<()>> = Vec::new();
         let mut all_metrics: Vec<Arc<SourceMetrics>> = Vec::new();
 
-        let race_tracker = ShredRaceTracker::new();
+        let shred_source_count = self.sources.iter().filter(|(s, _)| !s.is_rpc()).count();
+        let race_tracker = ShredRaceTracker::new(shred_source_count);
 
         // Parse filter programs once at start time; shared across relay threads.
         let filter_set: Arc<HashSet<Pubkey>> = Arc::new(

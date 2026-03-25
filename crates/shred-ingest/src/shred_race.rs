@@ -31,10 +31,11 @@ pub struct ShredArrival {
 }
 
 struct ShredFirstArrival {
-    recv_ns: u64,
-    source: &'static str,
+    /// (source_name, recv_ns) for each feed that has delivered this shred.
+    arrivals: Vec<(&'static str, u64)>,
     inserted_ns: u64,
-    matched: bool,
+    /// How many shred-tier sources must deliver before the race is recorded.
+    expected: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +183,11 @@ pub struct ShredRaceTracker {
 }
 
 impl ShredRaceTracker {
-    pub fn new() -> Arc<Self> {
+    /// `expected`: number of shred-tier sources that must all deliver a shred
+    /// before a race result is recorded. A race is only meaningful when every
+    /// configured shred feed carried the shred — partial deliveries are evicted
+    /// without producing a result.
+    pub fn new(expected: usize) -> Arc<Self> {
         let (tx, rx) = bounded::<ShredArrival>(4096);
         let arrivals: Arc<DashMap<(u64, u32), ShredFirstArrival>> = Arc::new(DashMap::new());
         let pairs: Arc<DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>> =
@@ -195,7 +200,7 @@ impl ShredRaceTracker {
             .name("shred-race-proc".into())
             .spawn(move || {
                 for arrival in &rx {
-                    process_arrival(&arrivals_proc, &pairs_proc, arrival);
+                    process_arrival(&arrivals_proc, &pairs_proc, arrival, expected);
                 }
             })
             .expect("failed to spawn shred-race-proc");
@@ -236,6 +241,7 @@ fn process_arrival(
     arrivals: &DashMap<(u64, u32), ShredFirstArrival>,
     pairs: &DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>,
     arrival: ShredArrival,
+    expected: usize,
 ) {
     let ShredArrival { source, slot, idx, recv_ns } = arrival;
     let now = metrics::now_ns();
@@ -243,46 +249,51 @@ fn process_arrival(
     use dashmap::mapref::entry::Entry;
     match arrivals.entry((slot, idx)) {
         Entry::Occupied(mut e) => {
-            // Already raced — this is a retransmission, ignore.
-            if e.get().matched {
+            // All expected sources already delivered — retransmission guard.
+            if e.get().arrivals.len() >= e.get().expected {
                 return;
             }
-            let first_source = e.get().source;
-            if first_source == source {
-                // Duplicate from the same feed — ignore.
+            // Duplicate from the same feed — ignore.
+            if e.get().arrivals.iter().any(|&(s, _)| s == source) {
                 return;
             }
-            let first_recv_ns = e.get().recv_ns;
-
-            // Discard if delta looks like an eviction artifact (>10s).
-            let lead_us = ((first_recv_ns as i64) - (recv_ns as i64)).abs() / 1000;
-            if lead_us >= 10_000_000 {
+            // Stale entry not yet evicted — remove and discard.
+            if now.saturating_sub(e.get().inserted_ns) >= 10_000_000_000 {
                 e.remove();
                 return;
             }
 
-            let winner = if first_recv_ns <= recv_ns { first_source } else { source };
+            e.get_mut().arrivals.push((source, recv_ns));
 
-            // Canonical key: alphabetically sorted so (a,b) == (b,a).
-            let (key_a, key_b) = if first_source <= source {
-                (first_source, source)
-            } else {
-                (source, first_source)
-            };
+            if e.get().arrivals.len() >= e.get().expected {
+                // All sources delivered — record all pairwise results.
+                let mut sorted = e.get().arrivals.clone();
+                sorted.sort_unstable_by_key(|&(_, ns)| ns);
 
-            let pair = pairs
-                .entry((key_a, key_b))
-                .or_insert_with(|| ShredPairMetrics::new(key_a, key_b))
-                .clone();
-            pair.record(winner, lead_us);
-
-            // Mark settled — don't remove. Future retransmissions of the same
-            // (slot, idx) hit the matched guard above and return early, matching
-            // shredder's IsNew=false semantics: one race per shred, ever.
-            e.get_mut().matched = true;
+                for i in 0..sorted.len() {
+                    for j in (i + 1)..sorted.len() {
+                        let (winner_src, winner_ns) = sorted[i];
+                        let (loser_src, loser_ns) = sorted[j];
+                        let lead_us = (loser_ns as i64 - winner_ns as i64) / 1000;
+                        // Canonical key: alphabetically sorted so (a,b) == (b,a).
+                        let (key_a, key_b) =
+                            if winner_src <= loser_src { (winner_src, loser_src) }
+                            else { (loser_src, winner_src) };
+                        let pair = pairs
+                            .entry((key_a, key_b))
+                            .or_insert_with(|| ShredPairMetrics::new(key_a, key_b))
+                            .clone();
+                        pair.record(winner_src, lead_us);
+                    }
+                }
+            }
         }
         Entry::Vacant(e) => {
-            e.insert(ShredFirstArrival { recv_ns, source, inserted_ns: now, matched: false });
+            e.insert(ShredFirstArrival {
+                arrivals: vec![(source, recv_ns)],
+                inserted_ns: now,
+                expected,
+            });
         }
     }
 }
