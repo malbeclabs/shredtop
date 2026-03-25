@@ -10,6 +10,7 @@
 //! the shred lead time (positive = shred arrived before RPC).
 
 use crossbeam_channel::Sender;
+use crate::leader_cache::LeaderCache;
 use crate::receiver::CaptureEvent;
 use dashmap::DashMap;
 use solana_pubkey::Pubkey;
@@ -381,11 +382,14 @@ pub struct FanInSource {
     /// account keys include at least one of these pubkeys are counted for lead-time.
     /// Applies to shred-tier sources only; RPC-tier sources (is_rpc=true) are exempt.
     pub filter_programs: Vec<String>,
+    /// Optional leader schedule cache. When set, publisher IP stats are restricted
+    /// to shreds whose source IP is the scheduled slot leader.
+    pub leader_cache: Option<Arc<LeaderCache>>,
 }
 
 impl FanInSource {
     pub fn new() -> Self {
-        Self { sources: Vec::new(), filter_programs: Vec::new() }
+        Self { sources: Vec::new(), filter_programs: Vec::new(), leader_cache: None }
     }
 
     pub fn add_source(&mut self, source: Box<dyn TxSource>, metrics: Arc<SourceMetrics>) {
@@ -403,7 +407,7 @@ impl FanInSource {
         let mut all_metrics: Vec<Arc<SourceMetrics>> = Vec::new();
 
         let shred_source_count = self.sources.iter().filter(|(s, _)| !s.is_rpc()).count();
-        let race_tracker = ShredRaceTracker::new(shred_source_count);
+        let race_tracker = ShredRaceTracker::new(shred_source_count, self.leader_cache);
 
         // Parse filter programs once at start time; shared across relay threads.
         let filter_set: Arc<HashSet<Pubkey>> = Arc::new(

@@ -7,7 +7,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde::Serialize;
-use shred_ingest::{DecodedTx, FanInSource, IpSnapshot, ShredPairSnapshot, SourceMetricsSnapshot};
+use shred_ingest::{DecodedTx, FanInSource, IpSnapshot, LeaderCache, ShredPairSnapshot, SourceMetricsSnapshot};
 use shred_ingest::source_metrics::SlotStats;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -65,6 +65,9 @@ pub fn run(config: &ProbeConfig, duration_secs: u64, output: Option<PathBuf>) ->
 
     let mut fan_in = FanInSource::new();
     fan_in.filter_programs = config.filter_programs.clone();
+    fan_in.leader_cache = config.leader_filter.as_ref()
+        .filter(|lf| lf.enabled)
+        .map(|lf| LeaderCache::new(&lf.rpc_url));
 
     for entry in &config.sources {
         let (source, metrics) = build_source(entry, None)?;

@@ -21,6 +21,26 @@ pub struct ProbeConfig {
     /// Prometheus metrics HTTP endpoint. Omit or set enabled=false to disable.
     #[serde(default)]
     pub metrics: MetricsConfig,
+    /// Leader schedule filter for publisher IP stats. When enabled, only shreds
+    /// whose source IP matches the scheduled slot leader are counted.
+    /// Meaningful for turbine/unicast mode; relay IPs (DZ, Jito) will produce
+    /// empty publisher_ips since relay IPs don't appear in the leader schedule.
+    #[serde(default)]
+    pub leader_filter: Option<LeaderFilterConfig>,
+}
+
+/// Configuration for leader-schedule-based publisher IP filtering.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LeaderFilterConfig {
+    /// Enable the filter. When false, the section is parsed but ignored.
+    #[serde(default = "LeaderFilterConfig::default_enabled")]
+    pub enabled: bool,
+    /// Solana RPC URL used to fetch `getLeaderSchedule` and `getClusterNodes`.
+    pub rpc_url: String,
+}
+
+impl LeaderFilterConfig {
+    fn default_enabled() -> bool { true }
 }
 
 /// Configuration for the optional Prometheus metrics HTTP endpoint.
@@ -143,6 +163,7 @@ impl ProbeConfig {
             filter_programs: Vec::new(),
             capture: None,
             metrics: MetricsConfig::default(),
+            leader_filter: None,
             sources: vec![
                 SourceEntry {
                     name: "bebop".into(),

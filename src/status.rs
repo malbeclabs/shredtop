@@ -198,9 +198,10 @@ pub fn run() -> Result<()> {
             "{}",
             color::bold(&format!(
                 "  {:<22}  {:>7}  {:>9}  {:>10}  {:>9}  {:>9}",
-                "CONTENDER", "WIN%", "RACES", "FASTER BY", "LEAD p50", "LEAD p95",
+                "CONTENDER", "WIN%", "RACES/s", "FASTER BY", "LEAD p50", "LEAD p95",
             ))
         );
+        let uptime_secs = (ts - started_at).max(1) as u64;
         let mut pairs: Vec<&serde_json::Value> = race_pairs.unwrap().iter().collect();
         pairs.sort_by(|a, b| {
             let ma = a["total_matched"].as_u64().unwrap_or(0);
@@ -214,6 +215,7 @@ pub fn run() -> Result<()> {
             let sa = p["source_a"].as_str().unwrap_or("?");
             let sb = p["source_b"].as_str().unwrap_or("?");
             let matched = p["total_matched"].as_u64().unwrap_or(0);
+            let races_per_sec = matched / uptime_secs;
             let a_pct = p["a_win_pct"].as_f64().unwrap_or(0.0);
             let b_pct = 100.0 - a_pct;
             let (faster, f_pct, slower, s_pct) = if a_pct >= b_pct {
@@ -237,7 +239,7 @@ pub fn run() -> Result<()> {
                 "{}",
                 color::green(&format!(
                     "  {:<22}  {:>6.1}%  {:>9}  {:>10}  {:>9}  {:>9}",
-                    faster, f_pct, format_num(matched), avg_str, p50_str, p95_str,
+                    faster, f_pct, races_per_sec, avg_str, p50_str, p95_str,
                 ))
             );
             println!(

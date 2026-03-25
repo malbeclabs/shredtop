@@ -17,6 +17,7 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
+use crate::leader_cache::LeaderCache;
 use crate::metrics;
 
 // ---------------------------------------------------------------------------
@@ -189,25 +190,37 @@ pub struct IpSnapshot {
 
 pub struct PublisherTracker {
     ips: DashMap<u32, Arc<IpStats>>,
+    /// When set, only count arrivals where src_ip is the scheduled slot leader.
+    leader_cache: Option<Arc<LeaderCache>>,
 }
 
 impl PublisherTracker {
-    fn new() -> Arc<Self> {
-        Arc::new(Self { ips: DashMap::new() })
+    fn new(leader_cache: Option<Arc<LeaderCache>>) -> Arc<Self> {
+        Arc::new(Self { ips: DashMap::new(), leader_cache })
     }
 
-    fn record_arrival(&self, src_ip: u32, now_ns: u64) {
+    fn record_arrival(&self, src_ip: u32, slot: u64, now_ns: u64) {
         if src_ip == 0 {
             return;
+        }
+        if let Some(ref cache) = self.leader_cache {
+            if !cache.is_leader(slot, src_ip) {
+                return;
+            }
         }
         let stats = self.ips.entry(src_ip).or_insert_with(|| IpStats::new(now_ns)).clone();
         stats.total.fetch_add(1, Relaxed);
         stats.last_seen_ns.store(now_ns, Relaxed);
     }
 
-    fn record_win(&self, src_ip: u32) {
+    fn record_win(&self, src_ip: u32, slot: u64) {
         if src_ip == 0 {
             return;
+        }
+        if let Some(ref cache) = self.leader_cache {
+            if !cache.is_leader(slot, src_ip) {
+                return;
+            }
         }
         if let Some(stats) = self.ips.get(&src_ip) {
             stats.wins.fetch_add(1, Relaxed);
@@ -271,12 +284,15 @@ impl ShredRaceTracker {
     /// before a race result is recorded. A race is only meaningful when every
     /// configured shred feed carried the shred — partial deliveries are evicted
     /// without producing a result.
-    pub fn new(expected: usize) -> Arc<Self> {
+    ///
+    /// `leader_cache`: when `Some`, publisher IP stats are only recorded for
+    /// shreds whose source IP matches the scheduled slot leader.
+    pub fn new(expected: usize, leader_cache: Option<Arc<LeaderCache>>) -> Arc<Self> {
         let (tx, rx) = bounded::<ShredArrival>(4096);
         let arrivals: Arc<DashMap<(u64, u32), ShredFirstArrival>> = Arc::new(DashMap::new());
         let pairs: Arc<DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>> =
             Arc::new(DashMap::new());
-        let publisher_tracker = PublisherTracker::new();
+        let publisher_tracker = PublisherTracker::new(leader_cache);
 
         // Processing thread: drain channel, match arrivals, record wins.
         let arrivals_proc = arrivals.clone();
@@ -339,7 +355,7 @@ fn process_arrival(
     let now = metrics::now_ns();
 
     // Record every arrival for per-IP totals (before dedup/race logic).
-    pub_tracker.record_arrival(src_ip, recv_ns);
+    pub_tracker.record_arrival(src_ip, slot, recv_ns);
 
     use dashmap::mapref::entry::Entry;
     match arrivals.entry((slot, idx)) {
@@ -367,7 +383,7 @@ fn process_arrival(
 
                 // Winner is the fastest arrival; record per-IP win.
                 let (_, _, winner_ip) = sorted[0];
-                pub_tracker.record_win(winner_ip);
+                pub_tracker.record_win(winner_ip, slot);
 
                 for i in 0..sorted.len() {
                     for j in (i + 1)..sorted.len() {

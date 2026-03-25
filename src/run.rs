@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use serde::Serialize;
-use shred_ingest::{CaptureEvent, DecodedTx, FanInSource, IpSnapshot, ShredPairSnapshot, SourceMetricsSnapshot};
+use shred_ingest::{CaptureEvent, DecodedTx, FanInSource, IpSnapshot, LeaderCache, ShredPairSnapshot, SourceMetricsSnapshot};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -104,6 +104,9 @@ pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Resul
 
     let mut fan_in = FanInSource::new();
     fan_in.filter_programs = config.filter_programs.clone();
+    fan_in.leader_cache = config.leader_filter.as_ref()
+        .filter(|lf| lf.enabled)
+        .map(|lf| LeaderCache::new(&lf.rpc_url));
     for entry in &config.sources {
         let (source, metrics) = build_source(entry, cap_tx.clone())?;
         fan_in.add_source(source, metrics);
