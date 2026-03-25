@@ -465,35 +465,32 @@ impl FanInSource {
                                 });
                                 let _ = out_tx_clone.try_send(decoded);
                             }
-                            Entry::Occupied(e) => {
+                            Entry::Occupied(mut e) => {
                                 // Duplicate — record lead time
                                 source_metrics.txs_duplicate.fetch_add(1, Relaxed);
-                                let first = e.get();
 
-                                // Lead time: positive = shred arrived before RPC.
-                                // If the first arrival was shred and the duplicate is RPC,
-                                // the lead is (rpc_recv - shred_recv).
-                                // If the first arrival was RPC and the duplicate is shred,
-                                // the lead is negative (shred arrived late).
-                                let (shred_ns, rpc_ns) = if !first.is_rpc && source_is_rpc {
-                                    // First=shred, current=rpc
-                                    (first.recv_ns, decoded.shred_recv_ns)
-                                } else if first.is_rpc && !source_is_rpc {
-                                    // First=rpc, current=shred
-                                    (decoded.shred_recv_ns, first.recv_ns)
-                                } else {
-                                    // Same tier (both shred or both rpc) — skip.
-                                    // Shred-vs-shred timing is handled by ShredRaceTracker.
+                                // Same tier (shred-vs-shred or rpc-vs-rpc): no cross-tier lead.
+                                // For shred-vs-shred: if this arrival is earlier, update the
+                                // stored entry so the subsequent RPC comparison uses the fastest shred.
+                                if source_is_rpc == e.get().is_rpc {
+                                    if !source_is_rpc && decoded.shred_recv_ns < e.get().recv_ns {
+                                        let m = e.get_mut();
+                                        m.recv_ns = decoded.shred_recv_ns;
+                                        m.metrics = source_metrics.clone();
+                                    }
                                     continue;
-                                };
+                                }
 
-                                let lead_us = (rpc_ns as i64 - shred_ns as i64) / 1000;
-
-                                if !first.is_rpc {
-                                    // Record on the shred source that arrived first
-                                    first.metrics.record_lead_time_us(lead_us);
+                                // Cross-tier lead time (one shred, one rpc).
+                                let (shred_ns, rpc_ns) = if !e.get().is_rpc {
+                                    (e.get().recv_ns, decoded.shred_recv_ns)
                                 } else {
-                                    // Current source (shred) arrived after RPC — record negative lead
+                                    (decoded.shred_recv_ns, e.get().recv_ns)
+                                };
+                                let lead_us = (rpc_ns as i64 - shred_ns as i64) / 1000;
+                                if !e.get().is_rpc {
+                                    e.get().metrics.record_lead_time_us(lead_us);
+                                } else {
                                     source_metrics.record_lead_time_us(lead_us);
                                 }
                             }
@@ -511,7 +508,7 @@ impl FanInSource {
             .name("fan-in-evict".into())
             .spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_secs(5));
-                let cutoff_ns = metrics::now_ns().saturating_sub(30_000_000_000);
+                let cutoff_ns = metrics::now_realtime_ns().saturating_sub(30_000_000_000);
                 dedup_evict.retain(|_, v| v.recv_ns > cutoff_ns);
             })
             .expect("failed to spawn evict thread");

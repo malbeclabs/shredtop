@@ -90,7 +90,7 @@ async fn run_logs_subscribe(
             continue;
         }
 
-        let recv_ns = metrics::now_ns();
+        let recv_ns = metrics::now_realtime_ns();
         let slot = response.context.slot;
 
         if let Some(decoded) = make_decoded_tx(&response.value.signature, slot, recv_ns) {

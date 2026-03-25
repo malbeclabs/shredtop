@@ -1,12 +1,14 @@
 //! Pipeline latency instrumentation.
 //!
 //! Provides nanosecond-resolution timestamps and per-stage duration accumulators.
-//! On Linux, timestamps use `CLOCK_MONOTONIC_RAW` (immune to NTP slew).
-//! On other platforms, an `Instant`-based fallback is used.
 //!
-//! Kernel `SO_TIMESTAMPNS` timestamps arrive in `CLOCK_REALTIME`. The receiver
-//! converts them to `CLOCK_MONOTONIC_RAW` using a one-time offset sampled at startup
-//! so all timestamps throughout the pipeline share the same reference frame.
+//! Two timestamp sources are used:
+//! - `now_ns()`: `CLOCK_MONOTONIC_RAW` (Linux) / `Instant` (other). Used for internal
+//!   timing, eviction, and any measurement that does not cross the shred/RPC boundary.
+//! - `now_realtime_ns()`: `CLOCK_REALTIME` (Linux) / `SystemTime` (other). Used for
+//!   shred-vs-RPC lead time measurement. Kernel `SO_TIMESTAMPNS` shred timestamps are
+//!   raw `CLOCK_REALTIME`; RPC timestamps also use `CLOCK_REALTIME` so both sides of
+//!   the lead time formula are on the same clock and NTP corrections cancel out.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -30,6 +32,27 @@ pub fn now_ns() -> u64 {
         static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
         let epoch = EPOCH.get_or_init(Instant::now);
         epoch.elapsed().as_nanos() as u64
+    }
+}
+
+/// Nanosecond timestamp via `CLOCK_REALTIME` (Linux) or `SystemTime` (other platforms).
+///
+/// Used for shred-vs-RPC lead time measurement so both sides of the comparison
+/// are on the same clock. Kernel `SO_TIMESTAMPNS` shred timestamps are raw
+/// `CLOCK_REALTIME`; recording RPC arrivals with this function keeps them in the
+/// same reference frame.
+#[inline(always)]
+pub fn now_realtime_ns() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts); }
+        (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
     }
 }
 
