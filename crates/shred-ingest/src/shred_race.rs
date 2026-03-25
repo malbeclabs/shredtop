@@ -213,6 +213,18 @@ impl PublisherTracker {
         stats.last_seen_ns.store(now_ns, Relaxed);
     }
 
+    /// Returns true when race pair recording should proceed for this slot.
+    /// If no leader cache is configured, always true. If configured, true only when
+    /// the slot's leader is already in the cache — ensuring races are only counted
+    /// for verified leader slots. For relay sources (DZ, Jito), this is the correct
+    /// gate since src_ip is the relay node, not the validator.
+    pub fn slot_known(&self, slot: u64) -> bool {
+        match &self.leader_cache {
+            None => true,
+            Some(cache) => cache.slot_known(slot),
+        }
+    }
+
     fn record_win(&self, src_ip: u32, slot: u64) {
         if src_ip == 0 {
             return;
@@ -377,6 +389,14 @@ fn process_arrival(
             e.get_mut().arrivals.push((source, recv_ns, src_ip));
 
             if e.get().arrivals.len() >= e.get().expected {
+                // Only record race results for slots whose leader is known.
+                // For relay sources (DZ, Jito), src_ip is the relay node not the
+                // validator, so we gate on slot knowledge rather than is_leader().
+                if !pub_tracker.slot_known(slot) {
+                    e.remove();
+                    return;
+                }
+
                 // All sources delivered — record all pairwise results.
                 let mut sorted = e.get().arrivals.clone();
                 sorted.sort_unstable_by_key(|&(_, ns, _)| ns);

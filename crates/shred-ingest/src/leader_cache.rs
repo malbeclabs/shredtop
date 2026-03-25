@@ -66,6 +66,13 @@ impl LeaderCache {
     pub fn is_leader(&self, slot: u64, src_ip: u32) -> bool {
         self.slot_to_ip.get(&slot).map(|ip| *ip == src_ip).unwrap_or(false)
     }
+
+    /// Returns true if the leader for `slot` is present in the cache.
+    /// Returns false if the slot is not yet known (cache still warming, or the slot
+    /// falls outside the current epoch window).
+    pub fn slot_known(&self, slot: u64) -> bool {
+        self.slot_to_ip.contains_key(&slot)
+    }
 }
 
 fn refresh(
