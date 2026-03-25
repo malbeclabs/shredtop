@@ -1,8 +1,8 @@
 # shredtop configuration
 
-# DoubleZero bebop feed
+# DoubleZero edge-solana-shreds feed
 [[sources]]
-name = "bebop"
+name = "edge-solana-shreds"
 type = "shred"
 multicast_addr = "233.84.178.1"
 port = 20001

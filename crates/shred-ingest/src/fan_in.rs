@@ -53,7 +53,7 @@ pub trait TxSource: Send + 'static {
 
 /// Wraps [`ShredReceiver`] + [`ShredDecoder`] into a single [`TxSource`].
 pub struct ShredTxSource {
-    /// Display name for this source (e.g. "bebop", "jito-shredstream")
+    /// Display name for this source (e.g. "edge-solana-shreds", "jito-shredstream")
     pub name: &'static str,
     pub multicast_addr: String,
     pub port: u16,
@@ -159,8 +159,8 @@ impl TxSource for ShredTxSource {
 /// a running validator on the same port. Turbine shreds come from many retransmit
 /// nodes, so the kernel distributes traffic across both sockets by per-flow hash.
 ///
-/// Use this as a baseline to measure how many milliseconds faster a premium shred
-/// feed (bebop, jito-shredstream) delivers each shred vs standard turbine propagation.
+/// Use this as a baseline to measure how many milliseconds faster a dedicated shred
+/// feed (edge-solana-shreds, jito-shredstream) delivers each shred vs standard turbine propagation.
 pub struct TurbineTxSource {
     /// Display name (e.g. "turbine")
     pub name: &'static str,

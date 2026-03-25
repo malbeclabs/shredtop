@@ -116,7 +116,7 @@ impl Default for CaptureConfig {
 /// One data source (shred feed or RPC endpoint).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SourceEntry {
-    /// Human-readable name shown in the dashboard (e.g. "bebop", "jito-shredstream", "rpc")
+    /// Human-readable name shown in the dashboard (e.g. "edge-solana-shreds", "jito-shredstream", "rpc")
     pub name: String,
     /// Source type. Valid values:
     ///   Shred-tier feeds:  "shred", "turbine", "unicast", "jito-grpc"
@@ -125,7 +125,7 @@ pub struct SourceEntry {
     pub source_type: String,
     /// Multicast group IP (shred only)
     pub multicast_addr: Option<String>,
-    /// UDP port (shred only; bebop=7733, jito-shredstream=20001)
+    /// UDP port (shred only; edge-solana-shreds=7733, jito-shredstream=20001)
     pub port: Option<u16>,
     /// Network interface for multicast (shred only, e.g. "doublezero1")
     pub interface: Option<String>,
@@ -166,7 +166,7 @@ impl ProbeConfig {
             leader_filter: None,
             sources: vec![
                 SourceEntry {
-                    name: "bebop".into(),
+                    name: "edge-solana-shreds".into(),
                     source_type: "shred".into(),
                     multicast_addr: Some("233.84.178.1".into()),
                     port: Some(7733),

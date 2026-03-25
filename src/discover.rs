@@ -403,7 +403,7 @@ struct DzGroup {
 /// Used as a fallback when traffic sniffing finds no packets within the timeout.
 fn known_port_for_group(code: &str) -> Option<u16> {
     match code {
-        "bebop" => Some(7733),
+        "edge-solana-shreds" => Some(7733),
         "jito-shredstream" => Some(20001),
         _ => None,
     }
@@ -768,7 +768,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
                 let name = prompt_required("  Name", "e.g. my-feed");
                 let multicast_addr = prompt_required("  Multicast IP", "e.g. 233.84.178.1");
                 let port_str =
-                    prompt_required("  Port", "e.g. 7733 for bebop, 20001 for jito");
+                    prompt_required("  Port", "e.g. 7733 for edge-solana-shreds, 20001 for jito");
                 let port: u16 = match port_str.parse() {
                     Ok(p) => p,
                     Err(_) => {

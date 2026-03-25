@@ -85,13 +85,13 @@ pub enum Commands {
     ///
     /// Example:
     ///   shredtop analyze capture.pcap \
-    ///     --feed 233.84.178.1=bebop \
+    ///     --feed 233.84.178.1=edge-solana-shreds \
     ///     --feed 233.84.178.2=jito-shredstream
     Analyze {
         /// pcap file to analyze
         pcap: std::path::PathBuf,
 
-        /// Feed IP=name mappings (repeatable), e.g. --feed 233.84.178.1=bebop
+        /// Feed IP=name mappings (repeatable), e.g. --feed 233.84.178.1=edge-solana-shreds
         #[clap(long, value_parser = parse_feed_mapping)]
         feed: Vec<(std::net::Ipv4Addr, String)>,
 

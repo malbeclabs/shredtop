@@ -2,172 +2,120 @@
 
 Measures which Solana shred feed delivers each shred to your machine first, and by how much.
 
-If your business depends on seeing transactions before your competitors, shredtop shows you which feed is winning, by how many microseconds, and whether that edge is holding.
-
 ```
 ====================================================================================================
-                      SHREDTOP  2026-03-19 11:42:07 UTC
+                      SHREDTOP  2026-03-25 11:42:07 UTC
 ====================================================================================================
+  Started: 2026-03-25 11:30:00 UTC   Uptime: 12m 7s
 
 SHRED RACE  validator → this machine  (since start):
 
-  CONTENDER              WIN%      RACES   FASTER BY    LEAD p50   LEAD p95
+  CONTENDER              WIN%   RACES/s   FASTER BY    LEAD p50   LEAD p95
   ----------------------------------------------------------------------------------------------------
-  bebop                  91.0%    14,823   +0.19ms      +0.1ms     +0.7ms
-  jito-shredstream        9.0%         —         —           —          —
+  edge-solana-shreds                 63.1%       412   +0.19ms       +0.1ms     +0.7ms
+  jito-shredstream      36.9%         —         —            —          —
 
-SOURCE               LINK    SHREDS/s   COV%  TXS/s
+SOURCE               LINK    SHREDS/s   COV%  TXS/s   BEAT%   LEAD avg   LEAD p50   LEAD p95   LEAD p99
 ----------------------------------------------------------------------------------------------------
-bebop                  OK        4200   98%     420
-jito-shredstream       OK        3900   97%     380
+edge-solana-shreds                  OK        4200   98%     420    64.2%    +48.2ms    +46.1ms    +71.3ms    +91.0ms
+jito-shredstream       OK        3900   97%     380    55.1%    +31.4ms    +29.9ms    +55.8ms    +74.2ms
+rpc                     —           —    —      390  baseline          —          —          —          —
 ----------------------------------------------------------------------------------------------------
-WIN% = race wins vs other shred feeds  LEAD = lead over slower feed  p50/p95 = percentiles
+
+  EDGE ASSESSMENT
+  ✓ edge-solana-shreds              ahead of RPC by +48ms avg
+  ✓ jito-shredstream   ahead of RPC by +31ms avg
 ```
 
 ---
 
-## How it works
+## Contents
 
-Solana leaders distribute blocks as shreds over UDP. Feed providers relay those shreds to your machine before the block is confirmed.
-
-shredtop:
-
-1. Binds a UDP socket on each shred feed and timestamps every arriving shred with the kernel UDP receive timestamp (`SO_TIMESTAMPNS`) — before any userspace processing
-2. When the same `(slot, shred_index)` pair arrives on multiple feeds, records which feed delivered it first and by how many microseconds — this is the **shred race**
-3. Parses the Agave wire format, runs Reed-Solomon FEC recovery on partial FEC sets, and deserializes `Entry` structs via bincode to extract transactions
-4. _(Optional)_ Polls a baseline source (RPC, Yellowstone Geyser, or Jito gRPC proxy) for confirmed transactions and matches by `signatures[0]` to compute **lead time vs RPC**
-
-Race lead time = `T_slower_feed − T_faster_feed` at the kernel socket layer. RPC lead time = `T_rpc_confirmed − T_shred_received`. Both positive means you were ahead.
-
-All timestamps use `CLOCK_MONOTONIC_RAW` (Linux) — immune to NTP slew.
-
-```mermaid
-flowchart LR
-    subgraph Feeds["Shred Feeds"]
-        DZ["DoubleZero UDP\nMulticast"]
-        JITO_UDP["Jito ShredStream\nUDP Multicast"]
-    end
-
-    subgraph Baseline["Baseline Sources"]
-        RPC["Solana RPC\nJSON-RPC polling"]
-        GEY["Yellowstone Geyser\ngRPC"]
-        JGRPC["Jito gRPC Proxy"]
-    end
-
-    subgraph HotPath["Hot Path (per shred feed)"]
-        RECV["ShredReceiver\nrecvmmsg · SO_TIMESTAMPNS"]
-        DEC["ShredDecoder\nFEC recovery · bincode"]
-    end
-
-    subgraph CaptureSide["Capture Side-Channel"]
-        CAP["Capture Thread\ntry_send · never blocks"]
-        RING["Ring Buffer\npcap / csv / jsonl"]
-    end
-
-    subgraph Agg["Matching & Aggregation"]
-        RACE["ShredRaceTracker\nslot + idx pairs\nfeed-vs-feed lead time"]
-        FANIN["FanInSource\nsignatures[0] dedup\nshred-vs-baseline lead time"]
-        METRICS["SourceMetrics\nper-source counters"]
-    end
-
-    LOG["/var/log/shredtop.jsonl\nMetrics Log"]
-
-    subgraph CLI["CLI"]
-        MON["shredtop monitor\nlive dashboard"]
-        STAT["shredtop status\nsnapshot"]
-        BENCH["shredtop bench\nJSON report"]
-        CLIST["shredtop capture list\nring inventory"]
-        ANA["shredtop analyze\ntiming table"]
-    end
-
-    DZ & JITO_UDP --> RECV
-    RECV -->|raw shreds| DEC
-    RECV -->|"ShredArrival\n(slot, idx, recv_ns)"| RACE
-    RECV -->|"CaptureEvent\ntry_send"| CAP
-    CAP --> RING
-
-    DEC -->|DecodedTx| FANIN
-    DEC --> METRICS
-    RPC & GEY & JGRPC -->|DecodedTx| FANIN
-    FANIN --> METRICS
-
-    RACE -->|ShredPairSnapshot| LOG
-    METRICS -->|snapshots| LOG
-
-    LOG --> MON & STAT & BENCH
-    RING --> CLIST & ANA
-```
-
----
-
-## Requirements
-
-- Linux x86_64
-- Two or more shred feeds (DoubleZero, Jito ShredStream UDP, or Jito gRPC proxy) — one feed is enough to collect data; the race requires at least two
-- A baseline source (optional): local Solana RPC node, Yellowstone Geyser endpoint, or Jito ShredStream gRPC proxy — only needed for BEAT%/LEAD vs RPC columns
-- Rust 1.81+ _(build from source only)_
+- [Install](#install)
+- [Discover](#discover)
+  - [probe.toml — full reference](#probetoml--full-reference)
+  - [Source types](#source-types)
+  - [Optional per-source fields](#optional-per-source-fields)
+- [Status](#status)
+- [Monitor](#monitor)
+- [Uninstall](#uninstall)
+- [Program Architecture](#program-architecture)
+- [Shred Race Architecture](#shred-race-architecture)
+  - [What is a shred race?](#what-is-a-shred-race)
+  - [Kernel timestamping](#kernel-timestamping)
+  - [Why CLOCK_REALTIME on both sides](#why-clock_realtime-on-both-sides)
+  - [The race processing pipeline](#the-race-processing-pipeline)
+  - [Pairwise win recording](#pairwise-win-recording)
+  - [Publisher IP tracking](#publisher-ip-tracking)
+  - [Leader slot filter](#leader-slot-filter)
+- [DoubleZero multicast groups](#doublezero-multicast-groups)
+- [License](#license)
 
 ---
 
 ## Install
 
-**RECOMENDED Build from source (requires Rust 1.81+):**
+**Build from source (requires Rust 1.81+):**
 
 ```bash
-git clone https://github.com/Haruko-Haruhara-GSPB/shredtop.git ~/shredtop
+git clone https://github.com/malbeclabs/shredtop.git ~/shredtop
 cargo install --path ~/shredtop
-```
-
-# to upgrade from source
-```
-shredtop upgrade --source
 ```
 
 **Pre-built binary:**
 
 ```bash
-curl -fsSL https://github.com/Haruko-Haruhara-GSPB/shredtop/releases/latest/download/shredtop -o /usr/local/bin/shredtop && chmod +x /usr/local/bin/shredtop
+curl -fsSL https://github.com/malbeclabs/shredtop/releases/latest/download/shredtop -o /usr/local/bin/shredtop && chmod +x /usr/local/bin/shredtop
 ```
 
-
-
----
-
-## Quick start
+**Upgrade:**
 
 ```bash
-# 1. Detect active feeds and write probe.toml
-shredtop discover
-
-# 2. Start background collection (installs systemd service, persists across reboots)
-shredtop service start
-
-# 3. Open the live dashboard — Ctrl-C closes the view, collection keeps running
-shredtop monitor
-
-# Check metrics any time without opening the dashboard
-shredtop status
-
-# Upgrade to the latest version
-shredtop upgrade --source
+shredtop upgrade           # download and install the latest release binary
+shredtop upgrade --source  # pull latest from GitHub and rebuild from source
 ```
 
 ---
 
-## Configuration
+## Discover
 
-`probe.toml` defines one or more sources. Mix shred feeds and an RPC baseline:
+`shredtop discover` sniffs live multicast traffic on your network interfaces, identifies active shred feeds, detects DoubleZero multicast groups, and optionally writes a ready-to-use `probe.toml`.
+
+```bash
+shredtop discover
+```
+
+It will show which multicast groups are active and on which ports, then offer to write `probe.toml`. After writing the config, you can edit it manually to add baseline sources, recording options, or filters.
+
+After discovery, start the background service:
+
+```bash
+shredtop service start
+```
+
+The service installs a systemd unit, enables it on boot, and starts collection immediately. Ctrl-C from `monitor` or `status` does not stop the service — it runs in the background until you explicitly stop it.
+
+```bash
+shredtop service stop
+shredtop service restart
+shredtop service status
+shredtop service uninstall   # stop, disable, and remove the unit file
+```
+
+### probe.toml — full reference
+
+`probe.toml` is the single configuration file for all sources, recording, and filters. `shredtop discover` writes a starter version; all optional sections are off by default.
 
 ```toml
-# DoubleZero bebop feed
+# ── Shred feeds ──────────────────────────────────────────────────────────────
+
 [[sources]]
-name = "bebop"
+name = "edge-solana-shreds"
 type = "shred"
 multicast_addr = "233.84.178.1"
 port = 7733
 interface = "doublezero1"
 
-# Jito ShredStream feed
 [[sources]]
 name = "jito-shredstream"
 type = "shred"
@@ -175,214 +123,189 @@ multicast_addr = "233.84.178.2"
 port = 20001
 interface = "doublezero1"
 
-# RPC baseline
+# ── Baseline source (required for BEAT%/LEAD columns) ────────────────────────
+
 [[sources]]
 name = "rpc"
 type = "rpc"
 url = "http://127.0.0.1:8899"
 
-# Turbine baseline — validator node only
-# Receives shreds from the standard turbine retransmit tree via SO_REUSEPORT.
-# Coexists with a running validator on the same TVU port.
-# Use this to measure premium feed lead time vs standard network propagation.
-# [[sources]]
-# name = "turbine"
-# type = "turbine"
-# port = 8002   # match your validator's --tvu-port (default 8002)
-
-# Yellowstone gRPC Geyser baseline (alternative to RPC polling)
+# Yellowstone gRPC (alternative to RPC — lower latency baseline)
 # [[sources]]
 # name = "geyser"
 # type = "geyser"
 # url = "https://grpc.example.com:10000"
 # x_token = "your-auth-token"   # optional
 
-# Jito ShredStream gRPC (requires local shredstream-proxy at 127.0.0.1:9999)
+# Jito ShredStream gRPC proxy (alternative baseline)
 # [[sources]]
-# name = "jito-shredstream"
+# name = "jito-grpc"
 # type = "jito-grpc"
 # url = "http://127.0.0.1:9999"
+
+# Turbine — validator node only. Receives shreds from the standard turbine
+# retransmit tree via SO_REUSEPORT, coexisting with a running validator.
+# Use this to measure how much faster a dedicated shred feed is vs standard turbine propagation.
+# [[sources]]
+# name = "turbine"
+# type = "turbine"
+# port = 8002
+
+# ── Optional: transaction filter ─────────────────────────────────────────────
+# Restrict BEAT%/LEAD measurement to transactions touching these programs or accounts.
+# Applies to shred-tier sources only. RPC-tier sources are always exempt.
+# filter_programs = [
+#   "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",   # Jupiter v6
+#   "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium AMM
+# ]
+
+# ── Optional: ring-buffer raw shred capture ───────────────────────────────────
+# Records every raw shred packet to a rotating file ring on disk.
+# Use `shredtop capture list` to inspect the ring and `shredtop analyze` to
+# post-process pcap files for offline timing analysis.
+#
+# [capture]
+# enabled = true
+# formats = ["pcap"]           # one or more of: "pcap", "csv", "jsonl"
+#                              # each format gets its own independent ring of files
+# max_size_mb = [10000]        # maximum disk space per format in MB
+#                              # index N applies to formats[N]; missing entries default to 10 000 MB
+# rotate_mb = 500              # start a new file after this many megabytes
+# output_dir = "/var/log/shredtop-capture"
+
+# ── Optional: Prometheus metrics endpoint ────────────────────────────────────
+# Serves Prometheus text-format metrics at http://0.0.0.0:<port>/metrics
+#
+# [metrics]
+# enabled = true
+# port = 9090
+
+# ── Optional: leader schedule filter for publisher IP stats ──────────────────
+# When enabled, publisher IP statistics only count shreds whose source IP
+# matches the scheduled slot leader for that slot.
+# See "Shred Race Architecture" below for when this is and isn't useful.
+#
+# [leader_filter]
+# enabled = true
+# rpc_url = "http://127.0.0.1:8899"
 ```
 
 ### Source types
 
 | `type` | Description |
 |--------|-------------|
-| `shred` | Raw UDP multicast shred feed (DoubleZero or Jito ShredStream relay). Requires `multicast_addr`, `port`, `interface`. |
-| `turbine` | Solana turbine retransmit tree. Binds the validator's TVU port with `SO_REUSEPORT` to coexist with a running validator. No multicast join required. Use this on a validator node to measure how many milliseconds faster a premium feed delivers each shred vs standard network propagation. Requires `port` (default `8002`). The lead time observed depends on which validator client is running — stock Agave delivers shreds via standard gossip, while accelerated validator forks deliver shreds via a faster path. shredtop captures whatever arrives at the TVU port; the number reflects the fork. |
-| `rpc` | Confirmed-block polling via standard Solana JSON-RPC. Requires `url`. |
-| `geyser` | Confirmed transactions via Yellowstone gRPC (Triton, Helius, QuickNode, etc.). Requires `url`; `x_token` is optional. Acts as RPC baseline. |
-| `jito-grpc` | Decoded entries from a local [Jito ShredStream proxy](https://github.com/jito-labs/shredstream-proxy). Requires `url` (e.g. `http://127.0.0.1:9999`). The proxy handles Jito auth; this client needs no credentials. Arrives before block confirmation — shows lead time vs. RPC baseline. |
+| `shred` | Raw UDP multicast shred feed (DZ or Jito ShredStream relay). Requires `multicast_addr`, `port`, `interface`. |
+| `turbine` | Solana turbine retransmit tree via `SO_REUSEPORT`. Coexists with a running validator on the TVU port. Requires `port` (default `8002`). |
+| `unicast` | Unicast UDP forwarder — exclusive bind to `addr:port`. For relays that push shreds to you directly. |
+| `rpc` | Confirmed-transaction WebSocket subscription (`logsSubscribe`). Requires `url`. |
+| `geyser` | Yellowstone gRPC (Triton, Helius, QuickNode, etc.). Requires `url`; `x_token` optional. Acts as RPC baseline. |
+| `jito-grpc` | Jito ShredStream proxy gRPC. Requires `url` (e.g. `http://127.0.0.1:9999`). Acts as RPC baseline. |
+| `shreder` | Shreder relay. |
+| `arpc` | Atlas RPC. |
+| `thor` | Thor. |
+| `jetstream` | Jetstream. |
 
-Optional per-source fields:
+### Optional per-source fields
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `port` | — | UDP multicast port (`shred` only). bebop=`7733`, jito-shredstream=`20001` — always set explicitly |
-| `interface` | `doublezero1` | Network interface for multicast (`shred` only) |
+| `pin_recv_core` | — | CPU core to pin the receiver thread to |
+| `pin_decode_core` | — | CPU core to pin the decoder thread to |
+| `shred_version` | — | Only accept shreds with this version (bytes 77–78). Drop mismatches silently. |
+| `heartbeat_port` | `5765` | DZ heartbeat port override (`shred` only) |
 | `x_token` | — | Auth token sent as `x-token` gRPC header (`geyser` only) |
-| `pin_recv_core` | — | CPU core to pin the receiver thread |
-| `pin_decode_core` | — | CPU core to pin the decoder thread |
-
-### Program filter
-
-To restrict lead-time measurement to specific programs or accounts, add a top-level `filter_programs` list:
-
-```toml
-# Only measure lead time for transactions that touch these programs/accounts.
-# Applies to shred-tier sources only; RPC sources are always exempt (provide baseline).
-filter_programs = [
-  "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",   # Jupiter v6
-  "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",  # Raydium AMM
-]
-```
-
-When `filter_programs` is empty (the default), all transactions are measured.
 
 ---
 
-## Commands
-
-### `shredtop service start`
-
-Installs the systemd unit file, enables it on boot, and starts the service. If the service is already running, shows current status instead. Run once after install.
+## Status
 
 ```bash
-shredtop service start    # start (installs and enables automatically)
-shredtop service stop     # stop
-shredtop service restart  # restart
-shredtop service status   # show systemd status
-shredtop service uninstall  # remove unit file and disable
+shredtop status
 ```
 
-### `shredtop monitor [--interval N]`
+Reads the last line from `/var/log/shredtop.jsonl` and prints a static one-shot table. Works from any terminal or script without opening the live dashboard.
 
-Live dashboard reading from the service metrics log. Refreshes every `N` seconds (default 5). Ctrl-C closes the view — the background service keeps running.
+**Output sections:**
 
-Requires `shredtop service start` to be running first.
-
-**SHRED RACE columns** (feed-vs-feed, always shown):
+**SHRED RACE** — cumulative since service start. One pair of rows per feed combination. The faster feed is green; the slower feed is dimmed.
 
 | Column | Meaning |
 |--------|---------|
 | `WIN%` | Fraction of matched shreds where this feed delivered first |
-| `RACES` | Total `(slot, shred_index)` pairs matched across both feeds |
-| `FASTER BY` | Mean lead time of the winning feed over the losing feed |
-| `LEAD p50` | Median lead — typical per-shred advantage |
-| `LEAD p95` | 95th percentile lead — good worst-case advantage |
+| `RACES/s` | Matched `(slot, shred_index)` pairs per second (total ÷ uptime) |
+| `FASTER BY` | Mean lead time of the winner over the loser |
+| `LEAD p50` | Median per-shred advantage |
+| `LEAD p95` | 95th-percentile advantage |
 
-**Per-source feed table columns**:
+**Per-source feed table** — with a baseline source:
 
 | Column | Meaning |
 |--------|---------|
-| `LINK` | DZ heartbeat freshness: `OK` ≤10s / `STALE` ≤60s / `DEAD` |
-| `SHREDS/s` | Raw UDP packets received per second |
+| `SHREDS/s` | Raw UDP packets per second (`—` for RPC-tier) |
 | `COV%` | Fraction of each block's data shreds that arrived |
 | `TXS/s` | Decoded transactions per second |
-| `BEAT%` | Of transactions seen by both this feed and RPC, % where this feed arrived first _(requires baseline)_ |
-| `LEAD avg` | Mean arrival advantage over RPC in milliseconds _(requires baseline)_ |
-| `LEAD p50` | Median lead time vs RPC — typical transaction advantage _(requires baseline)_ |
-| `LEAD p95` | 95th percentile lead vs RPC _(requires baseline)_ |
-| `LEAD p99` | 99th percentile lead vs RPC _(requires baseline)_ |
+| `BEAT%` | % of matched transactions where this feed arrived before RPC |
+| `LEAD avg` | Mean arrival advantage over RPC baseline |
+| `LEAD p50/p95/p99` | Percentiles of arrival advantage |
 
-### `shredtop status`
+**DEDUP** — cumulative totals showing how many transactions were first vs duplicate arrivals per source. Useful for verifying that dedup is working and that all sources are active.
 
-One-shot snapshot from the metrics log. Non-interactive — works from any terminal or script.
+---
 
-### `shredtop discover`
-
-Auto-detects DoubleZero multicast feeds and local RPC nodes. Shows group availability, active multicast memberships, and configured sources from `probe.toml`. Sniffs live traffic to identify the correct UDP port for each feed automatically. Offers to write detected sources to `probe.toml`.
-
-Internet-based sources (Helius, Triton, QuickNode Geyser, Jito gRPC proxy) cannot be auto-detected and must be configured manually in `probe.toml` — see the source type table above.
-
-### `shredtop bench --duration N [--output FILE]`
-
-Runs a timed benchmark for `N` seconds and writes a JSON report. If `--output` is omitted, prints to stdout.
-
-```json
-{
-  "duration_secs": 300,
-  "sources": [
-    {
-      "name": "bebop",
-      "shreds_received": 1260000,
-      "shreds_per_sec": 4200.0,
-      "bytes_received_mb": 1764.0,
-      "shreds_dropped": 120,
-      "slots_attempted": 1250,
-      "slots_complete": 980,
-      "slots_partial": 245,
-      "slots_dropped": 25,
-      "coverage_pct": 82.3,
-      "fec_recovered_shreds": 15600,
-      "txs_decoded": 126000,
-      "txs_per_sec": 420.0,
-      "win_rate_pct": 61.4,
-      "lead_time_mean_us": 321.4,
-      "lead_time_p50_us": 298,
-      "lead_time_p95_us": 612,
-      "lead_time_p99_us": 890,
-      "lead_time_samples": 74800,
-      "slot_breakdown": [
-        { "slot": 320481234, "shreds_seen": 42, "fec_recovered": 3, "txs_decoded": 18, "outcome": "complete" },
-        { "slot": 320481235, "shreds_seen": 38, "fec_recovered": 0, "txs_decoded": 14, "outcome": "partial" }
-      ]
-    }
-  ]
-}
-```
-
-`slot_breakdown` is included for shred-type sources only (omitted for rpc/geyser/jito-grpc). Up to the 500 most recently finalized slots are included. Each entry shows:
-
-| Field | Description |
-|-------|-------------|
-| `slot` | Solana slot number |
-| `shreds_seen` | Unique data shreds received (including FEC-recovered) |
-| `fec_recovered` | Shreds reconstructed via Reed-Solomon FEC |
-| `txs_decoded` | Transactions decoded from this slot |
-| `outcome` | `complete` / `partial` / `dropped` |
-
-### `shredtop init`
-
-Prints a default `probe.toml` to stdout.
-
-### `shredtop upgrade`
-
-Downloads and installs the latest release binary.
+## Monitor
 
 ```bash
-shredtop upgrade           # download latest release
-shredtop upgrade --source  # pull main and rebuild from source
+shredtop monitor
+shredtop monitor --interval 3   # refresh every 3 seconds (default: 5)
 ```
 
----
+Live dashboard reading from the service metrics log. Ctrl-C closes the view — the background service keeps running.
 
-## Understanding the numbers
+Requires `shredtop service start` to be running first.
 
-**Shred race WIN%** — fraction of matched shreds where one feed arrived first. With two healthy feeds on similar routes, expect 55–75% for the faster provider. 90%+ indicates a clear routing or peering advantage.
+**SHRED RACE section** — feed-vs-feed, always shown when two or more shred-tier sources are configured. Each matched pair produces two rows: the faster feed (green) and the slower feed (dimmed).
 
-**Shred race LEAD** — kernel-layer timing gap between feeds for the same `(slot, shred_index)`. Measured at `SO_TIMESTAMPNS` before any userspace processing. p50 is the typical per-shred advantage; p95 is a good worst-case. A stable positive lead at p95 means the faster feed is consistently ahead even in adverse conditions.
+| Column | Meaning |
+|--------|---------|
+| `WIN%` | Fraction of races this feed won |
+| `RACES/s` | Races per second (matched shreds ÷ uptime) |
+| `FASTER BY` | Mean lead time of the winning feed in ms |
+| `LEAD p50` | Median lead — typical per-shred advantage |
+| `LEAD p95` | 95th-percentile lead — good worst-case |
 
-**Coverage %** — Some feed providers relay only the tail FEC sets of each block, not the full block. 80–90% coverage is normal and expected. shredtop handles mid-stream joins correctly (no waiting for shred index 0).
+**Per-source feed table** — shown below the race section. Column set depends on whether a baseline source (RPC-tier) is configured.
 
-**Lead time vs RPC** _(requires baseline source)_ — samples outside `[−500ms, +2000ms]` are discarded as measurement artifacts (e.g. RPC retry delays). The displayed avg/p50/p95/p99 reflect real network latency only. p50 is the median (typical transaction), p99 is the worst-case you'll see in practice.
+Without baseline:
 
-**FEC recovery** — when data shreds are dropped in transit, Reed-Solomon coding shreds allow reconstruction. A non-zero FEC-REC count is normal; a high count relative to SHREDS/s may indicate packet loss on the multicast path.
+| Column | Meaning |
+|--------|---------|
+| `LINK` | DZ heartbeat freshness: `OK` ≤10s · `STALE` ≤60s · `DEAD` >60s · `—` for RPC-tier |
+| `SHREDS/s` | Raw UDP packets per second |
+| `COV%` | Block shred coverage |
+| `TXS/s` | Decoded transactions per second |
 
----
+With baseline (adds):
 
-## DoubleZero multicast groups
+| Column | Meaning |
+|--------|---------|
+| `BEAT%` | % of matched transactions where this feed beat RPC |
+| `LEAD avg` | Mean arrival advantage over RPC in ms |
+| `LEAD p50/p95/p99` | Percentiles of lead time |
 
-| Code | Multicast IP | Port | Description |
-|------|-------------|------|-------------|
-| `bebop` | `233.84.178.1` | `7733` | multicast relay |
-| `jito-shredstream` | `233.84.178.2` | `20001` | Jito relay |
+**EDGE ASSESSMENT** — shown when a baseline source is present. One line per shred-tier source:
 
-To subscribe to a multicast group over DoubleZero refer to the DoubleZero documentation.
+| Symbol | Meaning |
+|--------|---------|
+| `✓` green | Consistently ahead of RPC (mean > +1ms) |
+| `~` yellow | Marginally ahead (0 to +1ms) |
+| `⚠` yellow | Behind RPC (−5ms to 0ms) |
+| `✗` red | Badly behind RPC (< −5ms) |
 
 ---
 
 ## Uninstall
+
+**One command:**
 
 ```bash
 shredtop uninstall
@@ -390,19 +313,196 @@ shredtop uninstall
 
 Stops and removes the systemd service, binary, metrics log, capture files, config, and source directory. Prompts for confirmation before proceeding.
 
-### Manual uninstall
+**Manual:**
 
 ```bash
-shredtop service uninstall                                           # stop, disable, remove unit file
-cargo uninstall shredtop                                             # remove binary (if installed via cargo)
-rm /usr/local/bin/shredtop                                           # remove binary (if installed via curl)
-rm -f /var/log/shredtop.jsonl                                        # remove metrics log
-rm -rf "$(grep output_dir probe.toml | head -1 | cut -d'"' -f2)"    # remove capture files (check probe.toml for path)
-rm -rf ~/shredtop probe.toml                                         # remove source and config
+shredtop service uninstall                  # stop, disable, and remove systemd unit
+rm /usr/local/bin/shredtop                  # binary (curl install)
+# or: cargo uninstall shredtop              # binary (cargo install)
+rm -f /var/log/shredtop.jsonl               # metrics log
+rm -rf /var/log/shredtop-capture            # capture ring (check output_dir in probe.toml)
+rm -rf ~/shredtop probe.toml               # source and config
 ```
+
+---
+
+## Program Architecture
+
+shredtop runs as a background service writing structured metrics to `/var/log/shredtop.jsonl`. The CLI commands (`monitor`, `status`, `bench`) are readers — they parse that log and display it. The service and the display are completely decoupled.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Background Service  (shredtop run / systemd)                    │
+│                                                                   │
+│  ┌──────────────┐    ┌──────────────┐                            │
+│  │ ShredReceiver│    │ ShredReceiver│  ...one per shred feed      │
+│  │ recvmmsg     │    │ recvmmsg     │                            │
+│  │ SO_TIMESTAMPNS│   │ SO_TIMESTAMPNS│                           │
+│  └──────┬───────┘    └──────┬───────┘                            │
+│         │ RawShred           │ RawShred                           │
+│         │ (recv_timestamp_ns)│                                    │
+│         ▼                   ▼                                     │
+│  ┌──────────────┐    ┌──────────────┐                            │
+│  │ ShredDecoder │    │ ShredDecoder │  FEC recovery + bincode     │
+│  └──────┬───────┘    └──────┬───────┘                            │
+│         │ DecodedTx          │ DecodedTx                          │
+│         └──────────┬─────────┘                                    │
+│                    ▼                                               │
+│             ┌─────────────┐   ◄── RpcSource / GeyserSource        │
+│             │  FanInSource │        (baseline, RPC-tier)           │
+│             │  sig dedup   │                                       │
+│             │  lead time   │                                       │
+│             └──────┬───────┘                                      │
+│                    │ SourceMetrics                                 │
+│                    ▼                                               │
+│           /var/log/shredtop.jsonl  (JSONL, one line per interval) │
+│                                                                   │
+│  ┌─────────────────────┐   ShredArrival (slot, idx, recv_ns)      │
+│  │  ShredRaceTracker   │ ◄── tapped from every ShredReceiver       │
+│  │  (slot,idx) pairs   │                                          │
+│  │  pairwise wins      │                                          │
+│  │  PublisherTracker   │                                          │
+│  └─────────────────────┘                                          │
+│                                                                   │
+│  ┌─────────────────────┐                                          │
+│  │  Capture Thread     │ ◄── CaptureEvent tap (try_send, no-block) │
+│  │  pcap / csv / jsonl │                                          │
+│  │  rotating ring      │                                          │
+│  └─────────────────────┘                                          │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  CLI (reads log / ring, does not talk to service directly)       │
+│                                                                   │
+│  shredtop monitor   — live dashboard from /var/log/shredtop.jsonl│
+│  shredtop status    — latest snapshot from /var/log/shredtop.jsonl│
+│  shredtop bench     — timed run, structured JSON report           │
+│  shredtop capture list — inspect capture ring on disk            │
+│  shredtop analyze   — post-process pcap for timing table         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Hot-path design** — each `ShredReceiver` runs on a dedicated thread (optionally pinned to a CPU core) and uses:
+- `SO_BUSY_POLL 50µs` — spin-waits for packets, eliminating scheduler wakeup latency
+- `SO_TIMESTAMPNS` — kernel records receive timestamp at NIC driver level before any userspace scheduling
+- `recvmmsg(MSG_WAITFORONE, batch=64)` — returns as soon as ≥1 packet is available, amortizes syscall overhead
+- `SO_RCVBUFFORCE 32MB` — bypasses `net.core.rmem_max`
+
+The decoder runs on a second thread. FanIn relay threads are a third layer. The race tracker and capture tap receive data via bounded `crossbeam_channel` with non-blocking `try_send` — the hot path is never stalled by downstream consumers.
+
+---
+
+## Shred Race Architecture
+
+### What is a shred race?
+
+Solana leaders distribute blocks as shreds — 1228-byte UDP packets carrying Reed-Solomon coded fragments of the block data. Each shred has a fixed-layout header containing `slot` (8 bytes, LE u64 at offset 65) and `shred_index` (4 bytes, LE u32 at offset 73).
+
+A shred race is the answer to: **which feed delivered the same `(slot, shred_index)` to this machine first, and by how many microseconds?**
+
+This is measured at the kernel socket layer — before FEC reconstruction, before bincode deserialization, before any userspace processing whatsoever.
+
+### Kernel timestamping
+
+Each `ShredReceiver` enables `SO_TIMESTAMPNS` on its UDP socket at construction time. When the NIC driver delivers a packet, the kernel records `CLOCK_REALTIME` in a `SCM_TIMESTAMPNS` control message (cmsg). shredtop reads this via `recvmmsg` and extracts it from the cmsg chain on every packet. This timestamp reflects when the kernel first touched the packet — not when userspace read it.
+
+The raw `CLOCK_REALTIME` nanosecond value is stored directly. No clock conversion is applied.
+
+### Why CLOCK_REALTIME on both sides
+
+`SO_TIMESTAMPNS` delivers `CLOCK_REALTIME`. The RPC baseline source (`logsSubscribe` WebSocket callback) also records `clock_gettime(CLOCK_REALTIME)` at notification time.
+
+Using the same clock for both measurements is critical. The alternative — converting shred timestamps to `CLOCK_MONOTONIC_RAW` using a fixed startup offset — fails when NTP makes a step correction to `CLOCK_REALTIME` after startup (common in the first 30–60 seconds of boot while ntpd synchronizes). A 50ms NTP step would make every shred appear 50ms later than it really was, producing systematically negative lead times. With `CLOCK_REALTIME` on both sides, any NTP corrections affect both measurements equally and cancel out in the formula `lead_us = (rpc_ns − shred_ns) / 1000`.
+
+### The race processing pipeline
+
+```
+ShredReceiver hot loop (per feed)
+  │
+  │  recvmmsg → parse slot+idx from bytes [65:77]
+  │
+  ├─► try_send(ShredArrival { source, slot, idx, recv_ns, src_ip })
+  │         │                                          ↑
+  │         │                              CLOCK_REALTIME from SO_TIMESTAMPNS
+  │         │
+  │       bounded channel(4096)    ← drops silently on full; this is a
+  │         │                          sampling metric, not a correctness path
+  │         ▼
+  │   shred-race-proc thread
+  │     DashMap<(slot, idx), ShredFirstArrival>
+  │
+  │     On first arrival for (slot, idx):
+  │       insert { arrivals: [(source, recv_ns, src_ip)], expected: N }
+  │
+  │     On subsequent arrivals:
+  │       push (source, recv_ns, src_ip) to arrivals[]
+  │       if arrivals.len() == expected (all feeds delivered):
+  │         sort by recv_ns
+  │         record pairwise wins (see below)
+  │         record publisher IP win
+  │
+  └─► stale entries evicted every 5s (cutoff: 10s old)
+```
+
+`expected` equals the number of shred-tier sources configured. A race result is only recorded when **all** configured shred feeds have delivered the same shred — partial deliveries produce no result and are evicted.
+
+### Pairwise win recording
+
+When all N sources have delivered `(slot, idx)`, shredtop sorts the arrivals by `recv_ns` ascending (fastest first) and records every ordered pair:
+
+```
+for i in 0..N:
+    for j in (i+1)..N:
+        winner = arrivals[i]   ← earlier recv_ns
+        loser  = arrivals[j]
+        lead_us = (loser.recv_ns − winner.recv_ns) / 1000
+        key = alphabetically sorted (winner.source, loser.source)
+        pair.record(winner.source, lead_us)
+```
+
+Pair keys are sorted alphabetically so `(edge-solana-shreds, jito-shredstream)` and `(jito-shredstream, edge-solana-shreds)` map to the same entry. `a_wins` counts wins by the alphabetically-first source; `b_wins` counts wins by the other.
+
+A `RaceReservoir` (fixed 4096-slot ring buffer, overwriting oldest on full) stores recent `lead_us` values per pair. `percentiles()` sorts the buffer and returns p50/p95/p99 at snapshot time.
+
+### Publisher IP tracking
+
+Every shred arrival records the sender's IPv4 address (`src_ip` extracted from `recvmmsg msg_name`). The `PublisherTracker` maintains a `DashMap<u32, IpStats>` tracking per-IP:
+
+- `total_shreds` — all arrivals from this IP
+- `wins` — times this IP's shred won a race (i.e., was the fastest arrival)
+- `last_seen_ns` — most recent arrival timestamp
+
+Results appear in the `publisher_ips` array in the JSONL log and in `shredtop bench` output, sorted by wins descending.
+
+### Leader slot filter
+
+The `[leader_filter]` config section enables `LeaderCache`, a background component that:
+
+1. Calls `getEpochInfo` to get the current epoch and absolute slot
+2. Calls `getLeaderSchedule(absolute_slot)` to get the full epoch schedule: `pubkey → [relative_slot, ...]`
+3. Calls `getClusterNodes` to get the TPU/gossip IP for each validator pubkey
+4. Builds a `DashMap<slot, IPv4_u32>` mapping every absolute slot in the epoch to the leader's IPv4
+5. Refreshes once per epoch boundary, polling every 60 seconds
+
+With the filter enabled, `PublisherTracker` only records arrivals where `src_ip == leader_ip_for_slot`. Similarly, race results are only recorded for slots whose leader is already in the cache.
+
+**When this is useful:** turbine and unicast sources, where `src_ip` is the validator sending shreds directly. Filtering to confirmed leaders eliminates noise from retransmit nodes.
+
+**When this produces no results:** relay sources (DZ multicast, Jito ShredStream). The `src_ip` on every packet is the relay node's IP — it will never appear in the leader schedule. With `leader_filter` enabled, `publisher_ips` will be empty for these sources. Omit `[leader_filter]` if you are only running relay sources.
+
+---
+
+## DoubleZero multicast groups
+
+| Feed | Multicast IP | Port |
+|------|-------------|------|
+| edge-solana-shreds | `233.84.178.1` | `7733` |
+| jito-shredstream | `233.84.178.2` | `20001` |
+
+To subscribe, refer to the DoubleZero documentation for joining multicast groups over the DZ network fabric.
 
 ---
 
 ## License
 
-MIT
+Apache 2.0 — see [LICENSE](LICENSE).
