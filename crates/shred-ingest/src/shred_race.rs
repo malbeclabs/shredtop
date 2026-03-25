@@ -13,6 +13,7 @@
 use crossbeam_channel::{bounded, Sender};
 use dashmap::DashMap;
 use serde::Serialize;
+use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex};
 
@@ -28,11 +29,13 @@ pub struct ShredArrival {
     pub slot: u64,
     pub idx: u32,
     pub recv_ns: u64,
+    /// Source IPv4 in network byte order (big-endian u32). Zero if unavailable.
+    pub src_ip: u32,
 }
 
 struct ShredFirstArrival {
-    /// (source_name, recv_ns) for each feed that has delivered this shred.
-    arrivals: Vec<(&'static str, u64)>,
+    /// (source_name, recv_ns, src_ip) for each feed that has delivered this shred.
+    arrivals: Vec<(&'static str, u64, u32)>,
     inserted_ns: u64,
     /// How many shred-tier sources must deliver before the race is recorded.
     expected: usize,
@@ -154,6 +157,86 @@ impl ShredPairMetrics {
 }
 
 // ---------------------------------------------------------------------------
+// Per-IP publisher tracking
+// ---------------------------------------------------------------------------
+
+struct IpStats {
+    total: AtomicU64,
+    wins: AtomicU64,
+    last_seen_ns: AtomicU64,
+}
+
+impl IpStats {
+    fn new(now_ns: u64) -> Arc<Self> {
+        Arc::new(Self {
+            total: AtomicU64::new(0),
+            wins: AtomicU64::new(0),
+            last_seen_ns: AtomicU64::new(now_ns),
+        })
+    }
+}
+
+/// Per-source-IP snapshot, serialized to JSONL.
+#[derive(Serialize, Clone, Debug)]
+pub struct IpSnapshot {
+    /// Dotted-decimal IPv4 address (e.g. "1.2.3.4").
+    pub src_ip: String,
+    pub total_shreds: u64,
+    pub wins: u64,
+    pub win_pct: f64,
+    pub last_seen_ns: u64,
+}
+
+pub struct PublisherTracker {
+    ips: DashMap<u32, Arc<IpStats>>,
+}
+
+impl PublisherTracker {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { ips: DashMap::new() })
+    }
+
+    fn record_arrival(&self, src_ip: u32, now_ns: u64) {
+        if src_ip == 0 {
+            return;
+        }
+        let stats = self.ips.entry(src_ip).or_insert_with(|| IpStats::new(now_ns)).clone();
+        stats.total.fetch_add(1, Relaxed);
+        stats.last_seen_ns.store(now_ns, Relaxed);
+    }
+
+    fn record_win(&self, src_ip: u32) {
+        if src_ip == 0 {
+            return;
+        }
+        if let Some(stats) = self.ips.get(&src_ip) {
+            stats.wins.fetch_add(1, Relaxed);
+        }
+    }
+
+    pub fn snapshots(&self) -> Vec<IpSnapshot> {
+        let mut snaps: Vec<IpSnapshot> = self
+            .ips
+            .iter()
+            .map(|e| {
+                let ip = Ipv4Addr::from(e.key().to_be_bytes());
+                let total = e.value().total.load(Relaxed);
+                let wins = e.value().wins.load(Relaxed);
+                IpSnapshot {
+                    src_ip: ip.to_string(),
+                    total_shreds: total,
+                    wins,
+                    win_pct: if total > 0 { wins as f64 / total as f64 * 100.0 } else { 0.0 },
+                    last_seen_ns: e.value().last_seen_ns.load(Relaxed),
+                }
+            })
+            .collect();
+        snaps.sort_by(|a, b| b.wins.cmp(&a.wins));
+        snaps
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public snapshot (serialized into JSONL)
 // ---------------------------------------------------------------------------
 
@@ -180,6 +263,7 @@ pub struct ShredPairSnapshot {
 pub struct ShredRaceTracker {
     tx: Sender<ShredArrival>,
     pairs: Arc<DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>>,
+    publisher_tracker: Arc<PublisherTracker>,
 }
 
 impl ShredRaceTracker {
@@ -192,15 +276,17 @@ impl ShredRaceTracker {
         let arrivals: Arc<DashMap<(u64, u32), ShredFirstArrival>> = Arc::new(DashMap::new());
         let pairs: Arc<DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>> =
             Arc::new(DashMap::new());
+        let publisher_tracker = PublisherTracker::new();
 
         // Processing thread: drain channel, match arrivals, record wins.
         let arrivals_proc = arrivals.clone();
         let pairs_proc = pairs.clone();
+        let pub_proc = publisher_tracker.clone();
         std::thread::Builder::new()
             .name("shred-race-proc".into())
             .spawn(move || {
                 for arrival in &rx {
-                    process_arrival(&arrivals_proc, &pairs_proc, arrival, expected);
+                    process_arrival(&arrivals_proc, &pairs_proc, &pub_proc, arrival, expected);
                 }
             })
             .expect("failed to spawn shred-race-proc");
@@ -216,7 +302,7 @@ impl ShredRaceTracker {
             })
             .expect("failed to spawn shred-race-evict");
 
-        Arc::new(Self { tx, pairs })
+        Arc::new(Self { tx, pairs, publisher_tracker })
     }
 
     /// Get a channel sender for use in a `ShredReceiver`.
@@ -231,6 +317,11 @@ impl ShredRaceTracker {
         snaps.sort_by(|a, b| a.source_a.cmp(b.source_a).then(a.source_b.cmp(b.source_b)));
         snaps
     }
+
+    /// Snapshot per-source-IP publisher stats; sorted by wins descending.
+    pub fn ip_snapshots(&self) -> Vec<IpSnapshot> {
+        self.publisher_tracker.snapshots()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -240,11 +331,15 @@ impl ShredRaceTracker {
 fn process_arrival(
     arrivals: &DashMap<(u64, u32), ShredFirstArrival>,
     pairs: &DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>,
+    pub_tracker: &PublisherTracker,
     arrival: ShredArrival,
     expected: usize,
 ) {
-    let ShredArrival { source, slot, idx, recv_ns } = arrival;
+    let ShredArrival { source, slot, idx, recv_ns, src_ip } = arrival;
     let now = metrics::now_ns();
+
+    // Record every arrival for per-IP totals (before dedup/race logic).
+    pub_tracker.record_arrival(src_ip, recv_ns);
 
     use dashmap::mapref::entry::Entry;
     match arrivals.entry((slot, idx)) {
@@ -254,7 +349,7 @@ fn process_arrival(
                 return;
             }
             // Duplicate from the same feed — ignore.
-            if e.get().arrivals.iter().any(|&(s, _)| s == source) {
+            if e.get().arrivals.iter().any(|&(s, _, _)| s == source) {
                 return;
             }
             // Stale entry not yet evicted — remove and discard.
@@ -263,17 +358,21 @@ fn process_arrival(
                 return;
             }
 
-            e.get_mut().arrivals.push((source, recv_ns));
+            e.get_mut().arrivals.push((source, recv_ns, src_ip));
 
             if e.get().arrivals.len() >= e.get().expected {
                 // All sources delivered — record all pairwise results.
                 let mut sorted = e.get().arrivals.clone();
-                sorted.sort_unstable_by_key(|&(_, ns)| ns);
+                sorted.sort_unstable_by_key(|&(_, ns, _)| ns);
+
+                // Winner is the fastest arrival; record per-IP win.
+                let (_, _, winner_ip) = sorted[0];
+                pub_tracker.record_win(winner_ip);
 
                 for i in 0..sorted.len() {
                     for j in (i + 1)..sorted.len() {
-                        let (winner_src, winner_ns) = sorted[i];
-                        let (loser_src, loser_ns) = sorted[j];
+                        let (winner_src, winner_ns, _) = sorted[i];
+                        let (loser_src, loser_ns, _) = sorted[j];
                         let lead_us = (loser_ns as i64 - winner_ns as i64) / 1000;
                         // Canonical key: alphabetically sorted so (a,b) == (b,a).
                         let (key_a, key_b) =
@@ -290,7 +389,7 @@ fn process_arrival(
         }
         Entry::Vacant(e) => {
             e.insert(ShredFirstArrival {
-                arrivals: vec![(source, recv_ns)],
+                arrivals: vec![(source, recv_ns, src_ip)],
                 inserted_ns: now,
                 expected,
             });

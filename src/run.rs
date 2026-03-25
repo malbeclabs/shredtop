@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use serde::Serialize;
-use shred_ingest::{CaptureEvent, DecodedTx, FanInSource, ShredPairSnapshot, SourceMetricsSnapshot};
+use shred_ingest::{CaptureEvent, DecodedTx, FanInSource, IpSnapshot, ShredPairSnapshot, SourceMetricsSnapshot};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -26,6 +26,7 @@ struct LogEntry<'a> {
     started_at: u64,
     sources: Vec<SourceSnap<'a>>,
     shred_race: Vec<ShredPairSnapshot>,
+    publisher_ips: Vec<IpSnapshot>,
 }
 
 #[derive(Serialize)]
@@ -151,6 +152,7 @@ pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Resul
                 .map(|(c, p)| make_snap(c, p, elapsed))
                 .collect(),
             shred_race: race_tracker.snapshots(),
+            publisher_ips: race_tracker.ip_snapshots(),
         };
 
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {

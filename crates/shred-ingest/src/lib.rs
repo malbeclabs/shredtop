@@ -20,7 +20,7 @@ pub use jetstream_source::JetstreamTxSource;
 pub use jito_source::JitoShredstreamSource;
 pub use receiver::{CaptureEvent, ShredReceiver};
 pub use rpc_source::RpcSource;
-pub use shred_race::{ShredPairSnapshot, ShredRaceTracker};
+pub use shred_race::{IpSnapshot, ShredPairSnapshot, ShredRaceTracker};
 pub use source::{start_source, SourceConfig};
 pub use source_metrics::{SlotOutcome, SlotStats, SourceMetrics, SourceMetricsSnapshot};
 pub use thor_source::ThorTxSource;

@@ -7,7 +7,7 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde::Serialize;
-use shred_ingest::{DecodedTx, FanInSource, ShredPairSnapshot, SourceMetricsSnapshot};
+use shred_ingest::{DecodedTx, FanInSource, IpSnapshot, ShredPairSnapshot, SourceMetricsSnapshot};
 use shred_ingest::source_metrics::SlotStats;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -21,6 +21,7 @@ pub struct BenchReport {
     pub duration_secs: u64,
     pub sources: Vec<SourceReport>,
     pub shred_race: Vec<ShredPairSnapshot>,
+    pub publisher_ips: Vec<IpSnapshot>,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +105,7 @@ pub fn run(config: &ProbeConfig, duration_secs: u64, output: Option<PathBuf>) ->
             .map(|s| source_report(s, elapsed_secs))
             .collect(),
         shred_race: race_snaps,
+        publisher_ips: race_tracker.ip_snapshots(),
     };
 
     let json = serde_json::to_string_pretty(&report)?;
@@ -223,6 +225,27 @@ fn format_report(report: &BenchReport, header_title: &str, width: usize) -> Vec<
         "LEAD = kernel SO_TIMESTAMPNS delta between feeds  p50/p95 = percentiles  RACES = matched (slot,idx) pairs",
     ));
     lines.push(String::new());
+
+    // PUBLISHER IPs section
+    if !report.publisher_ips.is_empty() {
+        lines.push(color::bold("PUBLISHER IPs  (source IP → shreds delivered):"));
+        lines.push(String::new());
+        lines.push(color::bold(&format!(
+            "  {:<17}  {:>9}  {:>7}  {:>6}",
+            "SOURCE IP", "SHREDS", "WINS", "WIN%",
+        )));
+        lines.push(color::dim(&format!("  {}", "-".repeat(width - 2))));
+        for ip in &report.publisher_ips {
+            lines.push(format!(
+                "  {:<17}  {:>9}  {:>7}  {:>5.1}%",
+                ip.src_ip,
+                format_num(ip.total_shreds),
+                format_num(ip.wins),
+                ip.win_pct,
+            ));
+        }
+        lines.push(String::new());
+    }
 
     lines
 }

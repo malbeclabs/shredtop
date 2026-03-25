@@ -38,6 +38,8 @@ pub struct CaptureEvent {
     pub dst_ip: [u8; 4],
     pub dst_port: u16,
     pub payload: Vec<u8>,
+    /// Source IPv4 in network byte order (big-endian u32). Zero if unavailable.
+    pub src_ip: u32,
 }
 
 pub struct ShredReceiver {
@@ -338,15 +340,20 @@ impl ShredReceiver {
         // iovs/msgs for the lifetime of the loop.
         let mut pkts = vec![[0u8; PKT_CAP]; BATCH];
         let mut cmsgs = vec![[0u8; CMSG_CAP]; BATCH];
+        // Pre-allocate source address buffers. recvmmsg fills msg_name with
+        // sockaddr_in for each received packet, giving us the sender's IPv4.
+        let mut src_addrs: Vec<libc::sockaddr_in> =
+            (0..BATCH).map(|_| unsafe { std::mem::zeroed() }).collect();
         let mut iovs: Vec<libc::iovec> = pkts
             .iter_mut()
             .map(|b| libc::iovec { iov_base: b.as_mut_ptr() as _, iov_len: PKT_CAP })
             .collect();
+        let src_namelen = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
         let mut msgs: Vec<libc::mmsghdr> = (0..BATCH)
             .map(|i| libc::mmsghdr {
                 msg_hdr: libc::msghdr {
-                    msg_name: null_mut(),
-                    msg_namelen: 0,
+                    msg_name: &mut src_addrs[i] as *mut _ as *mut libc::c_void,
+                    msg_namelen: src_namelen,
                     msg_iov: &mut iovs[i] as *mut _,
                     msg_iovlen: 1,
                     msg_control: cmsgs[i].as_mut_ptr() as _,
@@ -361,6 +368,7 @@ impl ShredReceiver {
             // Reset fields that recvmmsg may have modified.
             for (i, msg) in msgs.iter_mut().enumerate() {
                 msg.msg_hdr.msg_controllen = CMSG_CAP;
+                msg.msg_hdr.msg_namelen = src_namelen;
                 msg.msg_hdr.msg_iov = &mut iovs[i] as *mut _;
                 iovs[i].iov_len = PKT_CAP;
             }
@@ -426,6 +434,9 @@ impl ShredReceiver {
                     .map(|rt| rt.saturating_sub(self.rt_to_mono_offset_ns))
                     .unwrap_or_else(metrics::now_ns);
 
+                // Source IP: sin_addr.s_addr is already big-endian (network byte order).
+                let src_ip = src_addrs[i].sin_addr.s_addr;
+
                 // Shred race: parse (slot, shred_index) from the shred header.
                 // Layout: bytes 65–72 = slot (u64 LE), 73–76 = shred_index (u32 LE).
                 if len >= 77 {
@@ -437,6 +448,7 @@ impl ShredReceiver {
                             slot,
                             idx,
                             recv_ns: ts,
+                            src_ip,
                         });
                     }
                 }
@@ -450,6 +462,7 @@ impl ShredReceiver {
                         dst_ip: self.dst_ip,
                         dst_port: self.dst_port,
                         payload: pkts[i][..len].to_vec(),
+                        src_ip,
                     });
                 }
 
@@ -474,7 +487,11 @@ impl ShredReceiver {
             let buf_uninit: &mut [std::mem::MaybeUninit<u8>] = unsafe {
                 std::slice::from_raw_parts_mut(buf.as_mut_ptr() as _, buf.len())
             };
-            let n = self.socket.recv(buf_uninit)?;
+            let (n, peer_addr) = self.socket.recv_from(buf_uninit)?;
+            let src_ip: u32 = peer_addr
+                .as_socket_ipv4()
+                .map(|a| u32::from_be_bytes(a.ip().octets()))
+                .unwrap_or(0);
             let ts = metrics::now_ns();
             if n == 0 { continue; }
 
@@ -514,6 +531,7 @@ impl ShredReceiver {
                         slot,
                         idx,
                         recv_ns: ts,
+                        src_ip,
                     });
                 }
             }
@@ -526,6 +544,7 @@ impl ShredReceiver {
                     dst_ip: self.dst_ip,
                     dst_port: self.dst_port,
                     payload: buf[..n].to_vec(),
+                    src_ip,
                 });
             }
 
