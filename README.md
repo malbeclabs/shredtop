@@ -123,7 +123,7 @@ cargo install --path ~/shredtop
 shredtop upgrade --source
 ```
 
-**Pre-built binary (recommended):**
+**Pre-built binary:**
 
 ```bash
 curl -fsSL https://github.com/Haruko-Haruhara-GSPB/shredtop/releases/latest/download/shredtop -o /usr/local/bin/shredtop && chmod +x /usr/local/bin/shredtop
