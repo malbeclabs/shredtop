@@ -199,18 +199,22 @@ impl PublisherTracker {
         Arc::new(Self { ips: DashMap::new(), leader_cache })
     }
 
-    fn record_arrival(&self, src_ip: u32, slot: u64, now_ns: u64) {
+    fn record_arrival(&self, src_ip: u32, now_ns: u64) {
         if src_ip == 0 {
             return;
-        }
-        if let Some(ref cache) = self.leader_cache {
-            if !cache.is_leader(slot, src_ip) {
-                return;
-            }
         }
         let stats = self.ips.entry(src_ip).or_insert_with(|| IpStats::new(now_ns)).clone();
         stats.total.fetch_add(1, Relaxed);
         stats.last_seen_ns.store(now_ns, Relaxed);
+    }
+
+    /// Returns true if `src_ip` is the scheduled leader for `slot`.
+    /// Always true when no leader cache is configured (no filtering).
+    pub fn is_leader(&self, slot: u64, src_ip: u32) -> bool {
+        match &self.leader_cache {
+            None => true,
+            Some(cache) => cache.is_leader(slot, src_ip),
+        }
     }
 
     /// Returns true when race pair recording should proceed for this slot.
@@ -366,8 +370,13 @@ fn process_arrival(
     let ShredArrival { source, slot, idx, recv_ns, src_ip } = arrival;
     let now = metrics::now_ns();
 
-    // Record every arrival for per-IP totals (before dedup/race logic).
-    pub_tracker.record_arrival(src_ip, slot, recv_ns);
+    // Record every arrival for per-IP totals (including retransmitters).
+    pub_tracker.record_arrival(src_ip, recv_ns);
+
+    // Only count leader-originated shreds for the race.
+    if !pub_tracker.is_leader(slot, src_ip) {
+        return;
+    }
 
     use dashmap::mapref::entry::Entry;
     match arrivals.entry((slot, idx)) {
@@ -389,14 +398,6 @@ fn process_arrival(
             e.get_mut().arrivals.push((source, recv_ns, src_ip));
 
             if e.get().arrivals.len() >= e.get().expected {
-                // Only record race results for slots whose leader is known.
-                // For relay sources (DZ, Jito), src_ip is the relay node not the
-                // validator, so we gate on slot knowledge rather than is_leader().
-                if !pub_tracker.slot_known(slot) {
-                    e.remove();
-                    return;
-                }
-
                 // All sources delivered — record all pairwise results.
                 let mut sorted = e.get().arrivals.clone();
                 sorted.sort_unstable_by_key(|&(_, ns, _)| ns);

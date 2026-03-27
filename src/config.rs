@@ -37,6 +37,11 @@ pub struct LeaderFilterConfig {
     pub enabled: bool,
     /// Solana RPC URL used to fetch `getLeaderSchedule` and `getClusterNodes`.
     pub rpc_url: String,
+    /// Optional RPC URL used exclusively for `getProgramAccounts` on the DZ
+    /// serviceability program (resolves DZ overlay IPs → client/gossip IPs).
+    /// Defaults to the public mainnet-beta RPC when absent.
+    #[serde(default)]
+    pub dz_rpc_url: Option<String>,
 }
 
 impl LeaderFilterConfig {
