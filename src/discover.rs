@@ -405,6 +405,7 @@ fn known_port_for_group(code: &str) -> Option<u16> {
     match code {
         "edge-solana-shreds" => Some(7733),
         "jito-shredstream" => Some(20001),
+        "rebop" | "rebop-amer" | "rebop-apac" | "rebop-eu" => Some(7744),
         _ => None,
     }
 }
