@@ -149,7 +149,7 @@ async fn run_jito_shredstream(
 
     while let Some(msg) = stream.next().await {
         let msg = msg?;
-        let recv_ns = metrics::now_ns();
+        let recv_ns = metrics::now_realtime_ns();
         let slot = msg.slot;
 
         // The proxy sends bincode-serialized Vec<solana_entry::entry::Entry>

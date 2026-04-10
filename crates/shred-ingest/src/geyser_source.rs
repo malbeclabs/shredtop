@@ -146,7 +146,7 @@ async fn run_geyser(
         let msg = msg?;
         if let Some(UpdateOneof::Transaction(tx_update)) = msg.update_oneof {
             if let Some(tx_info) = tx_update.transaction {
-                let recv_ns = metrics::now_ns();
+                let recv_ns = metrics::now_realtime_ns();
                 let slot = tx_update.slot;
 
                 metrics.txs_decoded.fetch_add(1, Relaxed);

@@ -172,7 +172,7 @@ async fn run_jetstream(
 
     while let Some(msg) = stream.next().await {
         let msg = msg?;
-        let recv_ns = metrics::now_ns();
+        let recv_ns = metrics::now_realtime_ns();
 
         metrics.txs_decoded.fetch_add(1, Relaxed);
 

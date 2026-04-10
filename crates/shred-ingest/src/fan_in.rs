@@ -362,6 +362,14 @@ impl TxSource for RpcTxSource {
 // FanInSource
 // ---------------------------------------------------------------------------
 
+/// Recorded when a cross-tier match occurs, so a later faster-shred update
+/// can correct the lead time measurement.
+struct CrossTierRecord {
+    rpc_ns: u64,
+    old_lead_us: i64,
+    shred_name: &'static str,
+}
+
 /// Tracks the first arrival of a transaction signature in the dedup map.
 struct FirstArrival {
     /// Receive timestamp from the winning source (nanoseconds)
@@ -370,6 +378,9 @@ struct FirstArrival {
     is_rpc: bool,
     /// Metrics handle for the winning source, used to record lead time
     metrics: Arc<SourceMetrics>,
+    /// Set after a cross-tier lead time is recorded so that a subsequent
+    /// faster shred source can correct the measurement.
+    cross_tier: Option<CrossTierRecord>,
 }
 
 /// Multi-source fan-in with deduplication.
@@ -463,6 +474,7 @@ impl FanInSource {
                                     recv_ns: decoded.shred_recv_ns,
                                     is_rpc: source_is_rpc,
                                     metrics: source_metrics.clone(),
+                                    cross_tier: None,
                                 });
                                 let _ = out_tx_clone.try_send(decoded);
                             }
@@ -475,6 +487,42 @@ impl FanInSource {
                                 // stored entry so the subsequent RPC comparison uses the fastest shred.
                                 if source_is_rpc == e.get().is_rpc {
                                     if !source_is_rpc && decoded.shred_recv_ns < e.get().recv_ns {
+                                        // A faster shred source arrived. If a cross-tier
+                                        // lead time was already recorded with the slower
+                                        // timestamp, correct the measurement.
+                                        if let Some(ref ct) = e.get().cross_tier {
+                                            let new_lead_us = (ct.rpc_ns as i64
+                                                - decoded.shred_recv_ns as i64)
+                                                / 1000;
+                                            // Adjust sum: remove old contribution, add corrected
+                                            e.get().metrics.lead_time_sum_us.fetch_sub(
+                                                ct.old_lead_us,
+                                                Relaxed,
+                                            );
+                                            source_metrics
+                                                .lead_time_sum_us
+                                                .fetch_add(new_lead_us, Relaxed);
+                                            // Adjust win count if direction changed
+                                            if ct.old_lead_us > 0 {
+                                                e.get()
+                                                    .metrics
+                                                    .lead_wins
+                                                    .fetch_sub(1, Relaxed);
+                                            }
+                                            if new_lead_us > 0 {
+                                                source_metrics
+                                                    .lead_wins
+                                                    .fetch_add(1, Relaxed);
+                                            }
+                                            // Push corrected sample to reservoir; old ages out
+                                            source_metrics
+                                                .lead_time_reservoir
+                                                .lock()
+                                                .unwrap()
+                                                .push(new_lead_us);
+                                            race_tracker_relay
+                                                .record_tx_race(ct.shred_name, new_lead_us);
+                                        }
                                         let m = e.get_mut();
                                         m.recv_ns = decoded.shred_recv_ns;
                                         m.metrics = source_metrics.clone();
@@ -503,6 +551,18 @@ impl FanInSource {
                                     source_metrics.record_lead_time_us(lead_us);
                                 }
                                 race_tracker_relay.record_tx_race(shred_name, lead_us);
+
+                                // Store cross-tier record so a later faster-shred can correct.
+                                // Only relevant when the stored entry is a shred (a faster
+                                // shred could arrive later and improve the measurement).
+                                if !e.get().is_rpc {
+                                    let m = e.get_mut();
+                                    m.cross_tier = Some(CrossTierRecord {
+                                        rpc_ns,
+                                        old_lead_us: lead_us,
+                                        shred_name,
+                                    });
+                                }
                             }
                         }
                     }
@@ -572,6 +632,7 @@ mod tests {
                     recv_ns: 100_000,
                     is_rpc: false,
                     metrics: metrics.clone(),
+                    cross_tier: None,
                 });
             }
             Entry::Occupied(_) => {
@@ -589,6 +650,7 @@ mod tests {
                     recv_ns: 200_000,
                     is_rpc: false,
                     metrics: metrics.clone(),
+                    cross_tier: None,
                 });
             }
             Entry::Occupied(_) => {

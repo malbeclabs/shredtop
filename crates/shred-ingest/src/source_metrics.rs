@@ -42,7 +42,7 @@ pub struct SlotStats {
 
 const RESERVOIR_CAP: usize = 4096;
 
-struct LeadTimeReservoir {
+pub struct LeadTimeReservoir {
     buf: [i64; RESERVOIR_CAP],
     /// Number of valid entries: 0..=RESERVOIR_CAP
     len: usize,
@@ -59,7 +59,7 @@ impl LeadTimeReservoir {
         }
     }
 
-    fn push(&mut self, v: i64) {
+    pub fn push(&mut self, v: i64) {
         self.buf[self.pos] = v;
         self.pos = (self.pos + 1) % RESERVOIR_CAP;
         if self.len < RESERVOIR_CAP {
@@ -124,6 +124,8 @@ pub struct SourceMetrics {
 
     // Tx flow
     pub txs_decoded: AtomicU64,
+    /// Decoded transactions dropped because the decoder→relay channel was full.
+    pub txs_dropped: AtomicU64,
     pub txs_emitted: AtomicU64,
     /// Won the fan-in dedup race (first arrival)
     pub txs_first: AtomicU64,
@@ -139,7 +141,7 @@ pub struct SourceMetrics {
     /// >LEAD_TIME_MAX_US after this source — almost certainly backfilled/replayed data.
     pub backfill_count: AtomicU64,
     /// Rolling reservoir of recent samples; sorted at snapshot time to compute percentiles.
-    lead_time_reservoir: Mutex<LeadTimeReservoir>,
+    pub lead_time_reservoir: Mutex<LeadTimeReservoir>,
 
     /// Rolling log of per-slot decode outcomes emitted by the decoder.
     /// Capped at SLOT_LOG_CAP; oldest entries are evicted when full.
@@ -166,6 +168,7 @@ pub struct SourceMetricsSnapshot {
     pub coverage_shreds_expected: u64,
     pub fec_recovered_shreds: u64,
     pub txs_decoded: u64,
+    pub txs_dropped: u64,
     pub txs_emitted: u64,
     pub txs_first: u64,
     pub txs_duplicate: u64,
@@ -199,6 +202,7 @@ impl SourceMetrics {
             coverage_shreds_expected: AtomicU64::new(0),
             fec_recovered_shreds: AtomicU64::new(0),
             txs_decoded: AtomicU64::new(0),
+            txs_dropped: AtomicU64::new(0),
             txs_emitted: AtomicU64::new(0),
             txs_first: AtomicU64::new(0),
             txs_duplicate: AtomicU64::new(0),
@@ -314,6 +318,7 @@ impl SourceMetrics {
             coverage_shreds_expected: self.coverage_shreds_expected.load(Relaxed),
             fec_recovered_shreds: self.fec_recovered_shreds.load(Relaxed),
             txs_decoded: self.txs_decoded.load(Relaxed),
+            txs_dropped: self.txs_dropped.load(Relaxed),
             txs_emitted: self.txs_emitted.load(Relaxed),
             txs_first: self.txs_first.load(Relaxed),
             txs_duplicate: self.txs_duplicate.load(Relaxed),

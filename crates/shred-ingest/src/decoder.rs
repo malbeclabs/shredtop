@@ -187,6 +187,11 @@ struct SlotState {
     /// Whether we've seen the last shred in slot
     last_seen: bool,
     last_touch_ns: u64,
+    /// Earliest kernel receive timestamp (ns) across all shreds in this slot.
+    /// Used as the shred-side timestamp for lead-time computation so the
+    /// measurement reflects when the first shred data arrived, not when
+    /// enough shreds accumulated to trigger deserialization.
+    earliest_recv_ns: u64,
     /// Number of transactions decoded from this slot
     txs_decoded: u32,
     /// Unique data shreds received (direct + FEC-recovered)
@@ -212,6 +217,7 @@ impl SlotState {
             max_index: 0,
             last_seen: false,
             last_touch_ns: now,
+            earliest_recv_ns: u64::MAX,
             txs_decoded: 0,
             shreds_seen: 0,
             fec_recovered_count: 0,
@@ -505,6 +511,9 @@ impl ShredDecoder {
                             SlotState::new(now)
                         });
                         slot_state.last_touch_ns = now;
+                        if raw_shred.recv_timestamp_ns < slot_state.earliest_recv_ns {
+                            slot_state.earliest_recv_ns = raw_shred.recv_timestamp_ns;
+                        }
 
                         let mut recovered_count = 0u64;
                         for (data_shard_idx, shard_bytes) in recovered {
@@ -571,10 +580,12 @@ impl ShredDecoder {
                                     let decoded = DecodedTx {
                                         transaction: tx,
                                         slot,
-                                        shred_recv_ns: raw_shred.recv_timestamp_ns,
+                                        shred_recv_ns: slot_state.earliest_recv_ns,
                                         decode_done_ns: decode_done,
                                     };
-                                    let _ = self.tx.try_send(decoded);
+                                    if self.tx.try_send(decoded).is_err() {
+                                        self.metrics.txs_dropped.fetch_add(1, Relaxed);
+                                    }
                                 }
                             }
                         }
@@ -597,6 +608,9 @@ impl ShredDecoder {
                 SlotState::new(now)
             });
             state.last_touch_ns = now;
+            if raw_shred.recv_timestamp_ns < state.earliest_recv_ns {
+                state.earliest_recv_ns = raw_shred.recv_timestamp_ns;
+            }
 
             let data_shard_idx = shred_index.checked_sub(fec_set_index).map(|i| i as usize);
             if let Some(shard_pos) = data_shard_idx {
@@ -650,7 +664,7 @@ impl ShredDecoder {
                     let decoded = DecodedTx {
                         transaction: tx,
                         slot,
-                        shred_recv_ns: raw_shred.recv_timestamp_ns,
+                        shred_recv_ns: state.earliest_recv_ns,
                         decode_done_ns: decode_done,
                     };
                     let _ = self.tx.try_send(decoded);
