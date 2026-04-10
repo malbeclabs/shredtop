@@ -32,10 +32,12 @@ pub struct RpcSource {
 
 impl RpcSource {
     pub fn new(rpc_url: &str, tx: Sender<DecodedTx>, metrics: Arc<SourceMetrics>) -> Result<Self> {
-        // Convert http(s):// → ws(s):// — same host and port, WebSocket path
-        let ws_url = rpc_url
+        // Convert http(s):// → ws(s)://, then probe to find the actual WS port.
+        // Agave validators sometimes bind WebSocket on rpc-port+1 (--rpc-pubsub-port).
+        let raw_ws = rpc_url
             .replacen("https://", "wss://", 1)
             .replacen("http://", "ws://", 1);
+        let ws_url = probe_ws_url(&raw_ws);
         tracing::info!("RPC source: will subscribe via {}", ws_url);
         Ok(Self { ws_url, tx, metrics })
     }
@@ -101,6 +103,62 @@ async fn run_logs_subscribe(
     }
 
     anyhow::bail!("logs subscription stream ended")
+}
+
+/// Probe `ws_url` with a real WebSocket handshake. If the primary port refuses
+/// the upgrade, try `port+1` — the Agave `--rpc-pubsub-port` convention.
+/// Returns the working URL, or the original if neither can be verified (the
+/// existing 5s retry loop will surface the error normally).
+fn probe_ws_url(ws_url: &str) -> String {
+    let without_scheme = ws_url
+        .strip_prefix("wss://")
+        .or_else(|| ws_url.strip_prefix("ws://"))
+        .unwrap_or(ws_url);
+    let (host_port, _) = without_scheme.split_once('/').unwrap_or((without_scheme, ""));
+    let (host, port_str) = host_port.rsplit_once(':').unwrap_or((host_port, ""));
+    let port: u16 = match port_str.parse() {
+        Ok(p) => p,
+        Err(_) => return ws_url.to_string(),
+    };
+
+    if try_ws_handshake(host, port) {
+        return ws_url.to_string();
+    }
+
+    let alt = port + 1;
+    if try_ws_handshake(host, alt) {
+        let alt_url = ws_url.replacen(&format!(":{}", port), &format!(":{}", alt), 1);
+        tracing::info!("rpc_source: WebSocket not on :{}, using :{} (rpc-pubsub-port)", port, alt);
+        return alt_url;
+    }
+
+    ws_url.to_string()
+}
+
+/// Attempt a WebSocket upgrade handshake. Returns true if the server responds
+/// with HTTP 101 Switching Protocols.
+fn try_ws_handshake(host: &str, port: u16) -> bool {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let addr = format!("{}:{}", host, port);
+    let Ok(addr) = addr.parse() else { return false };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) else {
+        return false;
+    };
+    let req = format!(
+        "GET / HTTP/1.1\r\nHost: {}:{}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        host, port
+    );
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(400)));
+    let mut buf = [0u8; 32];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    std::str::from_utf8(&buf[..n]).unwrap_or("").contains("101")
 }
 
 fn make_decoded_tx(sig_str: &str, slot: u64, recv_ns: u64) -> Option<DecodedTx> {
