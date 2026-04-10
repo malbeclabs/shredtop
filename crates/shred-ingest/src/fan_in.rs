@@ -431,6 +431,7 @@ impl FanInSource {
             let dedup_clone = dedup.clone();
             let out_tx_clone = out_tx.clone();
             let filter_clone = filter_set.clone();
+            let race_tracker_relay = race_tracker.clone();
 
             let relay_handle = std::thread::Builder::new()
                 .name(format!("fan-in-{}", source_name))
@@ -488,11 +489,20 @@ impl FanInSource {
                                     (decoded.shred_recv_ns, e.get().recv_ns)
                                 };
                                 let lead_us = (rpc_ns as i64 - shred_ns as i64) / 1000;
+                                // Identify the shred-tier source name for the race pair.
+                                // When shred was first: e.get().metrics.name is the fastest shred.
+                                // When rpc was first: source_name is this shred's name.
+                                let shred_name = if !e.get().is_rpc {
+                                    e.get().metrics.name
+                                } else {
+                                    source_name
+                                };
                                 if !e.get().is_rpc {
                                     e.get().metrics.record_lead_time_us(lead_us);
                                 } else {
                                     source_metrics.record_lead_time_us(lead_us);
                                 }
+                                race_tracker_relay.record_tx_race(shred_name, lead_us);
                             }
                         }
                     }

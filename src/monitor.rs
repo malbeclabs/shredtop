@@ -231,13 +231,13 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
     }
     out.push(String::new());
     out.push(color::dim(
-        "  Matched on (slot, shred_index) \u{2014} when the same shred arrives on both feeds, records",
+        "  Shred-vs-shred pairs matched on (slot, shred_index); shred-vs-rpc pairs matched on",
     ));
     out.push(color::dim(
-        "  which relay delivered it first and by how much. Timing uses the kernel UDP receive",
+        "  transaction signature. Timing uses the kernel UDP receive timestamp (SO_TIMESTAMPNS),",
     ));
     out.push(color::dim(
-        "  timestamp (SO_TIMESTAMPNS), before any userspace processing.",
+        "  before any userspace processing.",
     ));
     out.push(String::new());
 

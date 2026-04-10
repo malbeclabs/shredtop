@@ -354,6 +354,28 @@ impl ShredRaceTracker {
     pub fn ip_snapshots(&self) -> Vec<IpSnapshot> {
         self.publisher_tracker.snapshots()
     }
+
+    /// Record a transaction-level (signature-matched) cross-tier race result.
+    ///
+    /// Called from the fan-in relay thread when a transaction arrives on both a
+    /// shred feed and RPC, allowing RPC to appear as a contender in the race table.
+    ///
+    /// `shred_source` — `&'static str` name of the shred-tier source (e.g. `"edge-solana-shreds"`).
+    /// `lead_us`      — signed µs: positive when shred wins, negative when RPC wins.
+    pub fn record_tx_race(&self, shred_source: &'static str, lead_us: i64) {
+        const RPC: &str = "rpc";
+        let (key_a, key_b) = if shred_source <= RPC {
+            (shred_source, RPC)
+        } else {
+            (RPC, shred_source)
+        };
+        let pair = self.pairs
+            .entry((key_a, key_b))
+            .or_insert_with(|| ShredPairMetrics::new(key_a, key_b))
+            .clone();
+        let winner = if lead_us >= 0 { shred_source } else { RPC };
+        pair.record(winner, lead_us.abs());
+    }
 }
 
 // ---------------------------------------------------------------------------
