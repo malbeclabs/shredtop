@@ -84,9 +84,18 @@ pub fn run(
     print!("Waiting for leader schedule");
     std::io::Write::flush(&mut std::io::stdout()).ok();
 
-    // Give the leader cache time to populate (it fetches on first epoch detection).
-    std::thread::sleep(Duration::from_secs(10));
-    println!(" done");
+    if !leader_cache.wait_ready(Duration::from_secs(30)) {
+        anyhow::bail!("Leader schedule did not load within 30s. Check your RPC URL.");
+    }
+    println!(" done ({} slots loaded)", leader_cache.slot_count());
+
+    if !leader_cache.has_leader_slots(&validator_bytes) {
+        println!(
+            "Note: {} has no scheduled leader slots in the current epoch \
+             (LEADER_SLOTS will be 0; SHREDS counts retransmit activity).",
+            &validator[..validator.len().min(16)]
+        );
+    }
 
     // Build FanInSource with only the selected shred sources.
     let mut fan_in = FanInSource::new();

@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 // ---------------------------------------------------------------------------
 // DZ serviceability constants
@@ -53,6 +54,8 @@ pub struct LeaderCache {
     gossip_ip_to_pubkey: DashMap<u32, [u8; 32]>,
     /// Maps DZ overlay IPv4 (big-endian u32) → client/gossip IPv4 (big-endian u32).
     dz_ip_to_client_ip: DashMap<u32, u32>,
+    /// Set to `true` after the first successful refresh completes.
+    ready: AtomicBool,
 }
 
 impl LeaderCache {
@@ -66,6 +69,7 @@ impl LeaderCache {
             slot_to_pubkey: DashMap::new(),
             gossip_ip_to_pubkey: DashMap::new(),
             dz_ip_to_client_ip: DashMap::new(),
+            ready: AtomicBool::new(false),
         });
         let cache_bg = cache.clone();
         let url = rpc_url.to_string();
@@ -85,6 +89,7 @@ impl LeaderCache {
                                 match refresh(&client, &dz_client, &cache_bg, ei.absolute_slot, ei.slot_index) {
                                     Ok(()) => {
                                         last_epoch = ei.epoch;
+                                        cache_bg.ready.store(true, Relaxed);
                                         tracing::info!(
                                             epoch = ei.epoch,
                                             slots = cache_bg.slot_to_pubkey.len(),
@@ -139,6 +144,41 @@ impl LeaderCache {
     /// Returns the scheduled leader pubkey bytes for `slot`, or `None` if not in cache.
     pub fn leader_for_slot(&self, slot: u64) -> Option<[u8; 32]> {
         self.slot_to_pubkey.get(&slot).map(|pk| *pk)
+    }
+
+    /// Resolves `src_ip` (big-endian u32) to a validator identity pubkey, or `None`.
+    ///
+    /// Applies the same DZ overlay → gossip IP resolution as `is_leader`, but
+    /// without checking slot leadership. Useful for identifying which validator's
+    /// node forwarded a shred (e.g., in retransmit groups).
+    pub fn pubkey_for_ip(&self, src_ip: u32) -> Option<[u8; 32]> {
+        let resolved = self.dz_ip_to_client_ip.get(&src_ip)
+            .map(|ip| *ip)
+            .unwrap_or(src_ip);
+        self.gossip_ip_to_pubkey.get(&resolved).map(|pk| *pk)
+    }
+
+    /// Returns `true` if this validator has any scheduled leader slots in the current epoch.
+    pub fn has_leader_slots(&self, pk: &[u8; 32]) -> bool {
+        self.slot_to_pubkey.iter().any(|e| e.value() == pk)
+    }
+
+    /// Number of slot→pubkey entries currently in the cache.
+    pub fn slot_count(&self) -> usize {
+        self.slot_to_pubkey.len()
+    }
+
+    /// Blocks until the cache has completed its first refresh, or `timeout` elapses.
+    /// Returns `true` if ready, `false` on timeout.
+    pub fn wait_ready(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while !self.ready.load(Relaxed) {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        true
     }
 }
 

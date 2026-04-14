@@ -442,13 +442,23 @@ fn process_arrival(
     // Record every arrival for per-IP totals (including retransmitters).
     pub_tracker.record_arrival(src_ip, recv_ns);
 
-    // Validator-specific per-source tracking (slot-based, independent of IP filter).
+    // Validator-specific per-source tracking.
+    // SHREDS: IP-based — counts shreds forwarded by this validator's node (works for
+    //         both direct feeds and retransmit groups where src_ip is the retransmitter).
+    // SLOTS:  slot-based — counts unique leader slots (non-zero only when validator leads).
     if let Some((ref filter_pk, ref cache)) = validator_stats.filter {
-        if cache.leader_for_slot(slot).as_ref() == Some(filter_pk) {
+        let ip_match = cache.pubkey_for_ip(src_ip).as_ref() == Some(filter_pk);
+        let slot_match = cache.leader_for_slot(slot).as_ref() == Some(filter_pk);
+        if ip_match {
             let entry = validator_stats.per_source
                 .entry(source)
                 .or_insert_with(ValidatorSourceCount::new);
             entry.shreds.fetch_add(1, Relaxed);
+        }
+        if slot_match {
+            let entry = validator_stats.per_source
+                .entry(source)
+                .or_insert_with(ValidatorSourceCount::new);
             entry.slots.insert(slot, ());
         }
     }
