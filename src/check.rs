@@ -87,7 +87,12 @@ pub fn run(
     if !leader_cache.wait_ready(Duration::from_secs(30)) {
         anyhow::bail!("Leader schedule did not load within 30s. Check your RPC URL.");
     }
-    println!(" done ({} slots loaded)", leader_cache.slot_count());
+    println!(
+        " done ({} slots, {} DZ IPs, {} gossip IPs)",
+        leader_cache.slot_count(),
+        leader_cache.dz_ip_count(),
+        leader_cache.gossip_ip_count(),
+    );
 
     if !leader_cache.has_leader_slots(&validator_bytes) {
         println!(

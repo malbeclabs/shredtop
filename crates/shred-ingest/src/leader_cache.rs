@@ -168,6 +168,16 @@ impl LeaderCache {
         self.slot_to_pubkey.len()
     }
 
+    /// Number of DZ overlay IP → client IP mappings loaded from the serviceability program.
+    pub fn dz_ip_count(&self) -> usize {
+        self.dz_ip_to_client_ip.len()
+    }
+
+    /// Number of gossip IP → pubkey mappings loaded from cluster nodes.
+    pub fn gossip_ip_count(&self) -> usize {
+        self.gossip_ip_to_pubkey.len()
+    }
+
     /// Blocks until the cache has completed its first refresh, or `timeout` elapses.
     /// Returns `true` if ready, `false` on timeout.
     pub fn wait_ready(&self, timeout: std::time::Duration) -> bool {
