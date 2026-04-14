@@ -3,15 +3,15 @@
 //! Fetches the Solana leader schedule and cluster node list via RPC, then
 //! builds a `slot → leader_pubkey` map and a `gossip_ip → pubkey` map.
 //!
-//! Also fetches DZ serviceability program accounts to build a
-//! `dz_overlay_ip → client_ip` map. This lets `is_leader` resolve a packet's
-//! `src_ip` (which on DoubleZero multicast is the validator's DZ overlay IP,
-//! not its gossip IP) back to the validator's identity pubkey.
+//! Also fetches DZ access-pass accounts from the DoubleZero RPC to build a
+//! `public_ip → validator_pubkey` map. On DZ multicast groups, `src_ip` is the
+//! validator's public IPv4 address (confirmed via `doublezero access-pass list`).
 //!
-//! Resolution chain: `src_ip → [dz_ip_to_client_ip] → gossip_ip → pubkey → is_leader`
+//! Resolution: `src_ip → [ip_to_pubkey] → validator_pubkey` (primary)
+//!             `src_ip → [gossip_ip_to_pubkey] → validator_pubkey` (fallback)
 //!
-//! Used by [`crate::shred_race::PublisherTracker`] to skip shred arrivals
-//! whose source is not the scheduled slot leader.
+//! Used by [`crate::shred_race::PublisherTracker`] to attribute shred arrivals
+//! to a specific validator for per-source health monitoring.
 
 use dashmap::DashMap;
 use solana_client::rpc_client::RpcClient;
@@ -31,17 +31,14 @@ use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 /// On-chain program ID for the DoubleZero serviceability smart contract (mainnet).
 const DZ_SERVICEABILITY_PROGRAM: &str = "ser2VaTMAcYTaauMrTSfSrxBaUDq7BLNs2xfUugTAGv";
 
-/// Byte 0 of a DZ User account equals this discriminant (AccountType::User = 7).
-const DZ_USER_DISCRIMINATOR: u8 = 7;
+/// Anchor discriminator for DZ access-pass accounts.
+const DZ_ACCESS_PASS_DISCRIMINATOR: [u8; 8] = [0x0b, 0xf6, 0x8d, 0x09, 0x2b, 0x42, 0xa1, 0x40];
 
-/// Byte offset of `ClientIp` ([u8; 4] BE) in a DZ User account.
-const DZ_CLIENT_IP_OFFSET: usize = 116;
+/// Byte offset of the validator identity pubkey (32 bytes) in a DZ access-pass account.
+const DZ_ACCESS_PASS_PUBKEY_OFFSET: usize = 35;
 
-/// Byte offset of `DzIp` ([u8; 4] BE) in a DZ User account.
-const DZ_DZ_IP_OFFSET: usize = 120;
-
-/// Public mainnet RPC used to fetch DZ program accounts when no override is configured.
-const DZ_DEFAULT_RPC: &str = "https://api.mainnet-beta.solana.com";
+/// Byte offset of the public IPv4 address (4 bytes, big-endian) in a DZ access-pass account.
+const DZ_ACCESS_PASS_IP_OFFSET: usize = 67;
 
 // ---------------------------------------------------------------------------
 // LeaderCache
@@ -52,8 +49,9 @@ pub struct LeaderCache {
     slot_to_pubkey: DashMap<u64, [u8; 32]>,
     /// Maps gossip IPv4 (big-endian u32) → validator identity pubkey bytes.
     gossip_ip_to_pubkey: DashMap<u32, [u8; 32]>,
-    /// Maps DZ overlay IPv4 (big-endian u32) → client/gossip IPv4 (big-endian u32).
-    dz_ip_to_client_ip: DashMap<u32, u32>,
+    /// Maps public IPv4 (big-endian u32) → validator identity pubkey bytes.
+    /// Populated from DZ access-pass accounts via the DoubleZero RPC.
+    ip_to_pubkey: DashMap<u32, [u8; 32]>,
     /// Set to `true` after the first successful refresh completes.
     ready: AtomicBool,
 }
@@ -68,25 +66,25 @@ impl LeaderCache {
         let cache = Arc::new(Self {
             slot_to_pubkey: DashMap::new(),
             gossip_ip_to_pubkey: DashMap::new(),
-            dz_ip_to_client_ip: DashMap::new(),
+            ip_to_pubkey: DashMap::new(),
             ready: AtomicBool::new(false),
         });
         let cache_bg = cache.clone();
         let url = rpc_url.to_string();
-        let dz_url = dz_rpc_url.unwrap_or(DZ_DEFAULT_RPC).to_string();
+        let dz_url = dz_rpc_url.map(|s| s.to_string());
 
         std::thread::Builder::new()
             .name("leader-cache".into())
             .spawn(move || {
                 let client = RpcClient::new(url);
-                let dz_client = RpcClient::new(dz_url);
+                let dz_client = dz_url.as_deref().map(RpcClient::new);
                 let mut last_epoch = u64::MAX;
 
                 loop {
                     match client.get_epoch_info() {
                         Ok(ei) => {
                             if ei.epoch != last_epoch {
-                                match refresh(&client, &dz_client, &cache_bg, ei.absolute_slot, ei.slot_index) {
+                                match refresh(&client, dz_client.as_ref(), &cache_bg, ei.absolute_slot, ei.slot_index) {
                                     Ok(()) => {
                                         last_epoch = ei.epoch;
                                         cache_bg.ready.store(true, Relaxed);
@@ -94,7 +92,7 @@ impl LeaderCache {
                                             epoch = ei.epoch,
                                             slots = cache_bg.slot_to_pubkey.len(),
                                             gossip_nodes = cache_bg.gossip_ip_to_pubkey.len(),
-                                            dz_users = cache_bg.dz_ip_to_client_ip.len(),
+                                            dz_publishers = cache_bg.ip_to_pubkey.len(),
                                             "leader cache refreshed"
                                         );
                                     }
@@ -119,19 +117,18 @@ impl LeaderCache {
 
     /// Returns true if `src_ip` (big-endian u32) is the scheduled leader for `slot`.
     ///
-    /// Resolution: DZ overlay IP → client/gossip IP → validator pubkey → leader check.
-    /// Falls back to treating `src_ip` as a direct gossip IP if not found in the DZ map.
+    /// Checks `ip_to_pubkey` (DZ access-pass) first, then `gossip_ip_to_pubkey` as fallback.
     /// Returns false if the slot is not in the cache or the IP cannot be resolved.
     pub fn is_leader(&self, slot: u64, src_ip: u32) -> bool {
         let leader_pk = match self.slot_to_pubkey.get(&slot) {
             Some(pk) => *pk,
             None => return false,
         };
-        // Try DZ overlay IP → client/gossip IP; fall back to direct IP.
-        let resolved = self.dz_ip_to_client_ip.get(&src_ip)
-            .map(|ip| *ip)
-            .unwrap_or(src_ip);
-        self.gossip_ip_to_pubkey.get(&resolved)
+        // Try direct DZ access-pass map first; fall back to gossip IP lookup.
+        if let Some(pk) = self.ip_to_pubkey.get(&src_ip) {
+            return *pk == leader_pk;
+        }
+        self.gossip_ip_to_pubkey.get(&src_ip)
             .map(|pk| *pk == leader_pk)
             .unwrap_or(false)
     }
@@ -148,14 +145,14 @@ impl LeaderCache {
 
     /// Resolves `src_ip` (big-endian u32) to a validator identity pubkey, or `None`.
     ///
-    /// Applies the same DZ overlay → gossip IP resolution as `is_leader`, but
-    /// without checking slot leadership. Useful for identifying which validator's
-    /// node forwarded a shred (e.g., in retransmit groups).
+    /// Checks `ip_to_pubkey` (DZ access-pass) first, then `gossip_ip_to_pubkey` as fallback.
+    /// Useful for attributing shreds from retransmit groups to a specific validator.
     pub fn pubkey_for_ip(&self, src_ip: u32) -> Option<[u8; 32]> {
-        let resolved = self.dz_ip_to_client_ip.get(&src_ip)
-            .map(|ip| *ip)
-            .unwrap_or(src_ip);
-        self.gossip_ip_to_pubkey.get(&resolved).map(|pk| *pk)
+        // Try direct DZ access-pass map first; fall back to gossip IP lookup.
+        if let Some(pk) = self.ip_to_pubkey.get(&src_ip) {
+            return Some(*pk);
+        }
+        self.gossip_ip_to_pubkey.get(&src_ip).map(|pk| *pk)
     }
 
     /// Returns `true` if this validator has any scheduled leader slots in the current epoch.
@@ -168,9 +165,9 @@ impl LeaderCache {
         self.slot_to_pubkey.len()
     }
 
-    /// Number of DZ overlay IP → client IP mappings loaded from the serviceability program.
+    /// Number of public IP → validator pubkey mappings loaded from DZ access-pass accounts.
     pub fn dz_ip_count(&self) -> usize {
-        self.dz_ip_to_client_ip.len()
+        self.ip_to_pubkey.len()
     }
 
     /// Number of gossip IP → pubkey mappings loaded from cluster nodes.
@@ -198,7 +195,7 @@ impl LeaderCache {
 
 fn refresh(
     client: &RpcClient,
-    dz_client: &RpcClient,
+    dz_client: Option<&RpcClient>,
     cache: &LeaderCache,
     absolute_slot: u64,
     slot_index: u64,
@@ -240,53 +237,61 @@ fn refresh(
         cache.gossip_ip_to_pubkey.insert(ip, pk_bytes);
     }
 
-    // Fetch DZ user accounts to build dz_ip → client_ip map.
+    // Fetch DZ access-pass accounts to build public_ip → validator_pubkey map.
     // A failure here is non-fatal: log a warning and keep the existing map.
-    match refresh_dz_users(dz_client, cache) {
-        Ok(n) => tracing::debug!("DZ user map: {} entries", n),
-        Err(e) => tracing::warn!("DZ user map refresh failed (stale data retained): {}", e),
+    if let Some(dz) = dz_client {
+        match refresh_access_pass(dz, cache) {
+            Ok(n) => tracing::debug!("DZ access-pass map: {} entries", n),
+            Err(e) => tracing::warn!("DZ access-pass map refresh failed (stale data retained): {}", e),
+        }
     }
 
     Ok(())
 }
 
-/// Fetches all DZ User accounts and populates `cache.dz_ip_to_client_ip`.
-fn refresh_dz_users(dz_client: &RpcClient, cache: &LeaderCache) -> anyhow::Result<usize> {
+/// Fetches all DZ access-pass accounts and populates `cache.ip_to_pubkey`.
+///
+/// Each access-pass account encodes `(public_ipv4, validator_identity_pubkey)`.
+/// Layout (verified against live accounts):
+///   - bytes  0– 7: Anchor discriminator `[0x0b, 0xf6, 0x8d, 0x09, 0x2b, 0x42, 0xa1, 0x40]`
+///   - bytes 35–66: validator identity pubkey (32 bytes)
+///   - bytes 67–70: public IPv4 address (4 bytes, big-endian)
+fn refresh_access_pass(dz_client: &RpcClient, cache: &LeaderCache) -> anyhow::Result<usize> {
     let program_id = Pubkey::from_str(DZ_SERVICEABILITY_PROGRAM)?;
 
     let config = RpcProgramAccountsConfig {
         filters: Some(vec![
-            RpcFilterType::Memcmp(Memcmp::new_raw_bytes(0, vec![DZ_USER_DISCRIMINATOR])),
+            RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+                0,
+                DZ_ACCESS_PASS_DISCRIMINATOR.to_vec(),
+            )),
         ]),
         ..Default::default()
     };
 
     let accounts = dz_client.get_program_accounts_with_config(&program_id, config)?;
 
-    cache.dz_ip_to_client_ip.clear();
+    cache.ip_to_pubkey.clear();
     let mut count = 0usize;
 
     for (_, account) in accounts {
         let data = &account.data;
-        if data.len() < DZ_DZ_IP_OFFSET + 4 {
+        if data.len() < DZ_ACCESS_PASS_IP_OFFSET + 4 {
             continue;
         }
-        let client_ip = u32::from_be_bytes(
-            data[DZ_CLIENT_IP_OFFSET..DZ_CLIENT_IP_OFFSET + 4]
-                .try_into()
-                .unwrap(),
-        );
-        let dz_ip = u32::from_be_bytes(
-            data[DZ_DZ_IP_OFFSET..DZ_DZ_IP_OFFSET + 4]
+        let mut pk_bytes = [0u8; 32];
+        pk_bytes.copy_from_slice(&data[DZ_ACCESS_PASS_PUBKEY_OFFSET..DZ_ACCESS_PASS_PUBKEY_OFFSET + 32]);
+        let ip = u32::from_be_bytes(
+            data[DZ_ACCESS_PASS_IP_OFFSET..DZ_ACCESS_PASS_IP_OFFSET + 4]
                 .try_into()
                 .unwrap(),
         );
 
-        if dz_ip == 0 || client_ip == 0 {
+        if ip == 0 {
             continue;
         }
 
-        cache.dz_ip_to_client_ip.insert(dz_ip, client_ip);
+        cache.ip_to_pubkey.insert(ip, pk_bytes);
         count += 1;
     }
 

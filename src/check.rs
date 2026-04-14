@@ -42,9 +42,15 @@ pub fn run(
         })?;
 
     // Start the leader cache (background thread).
-    // Use the same RPC for DZ serviceability accounts — the local node has
-    // --full-rpc-api so getProgramAccounts works, unlike public endpoints.
-    let leader_cache = LeaderCache::new(&rpc_url, Some(&rpc_url));
+    // DZ access-pass accounts live on the DoubleZero RPC, not Solana mainnet.
+    let dz_rpc = read_dz_rpc_url();
+    if dz_rpc.is_none() {
+        eprintln!(
+            "Warning: ~/.config/doublezero/cli/config.yml not found or has no json_rpc_url. \
+             DZ IP → pubkey mapping will be unavailable; SHREDS may show 0 for DZ sources."
+        );
+    }
+    let leader_cache = LeaderCache::new(&rpc_url, dz_rpc.as_deref());
 
     // Select shred sources.
     let selected: Vec<_> = config
@@ -175,4 +181,21 @@ pub fn run(
     }
 
     Ok(())
+}
+
+/// Reads the DoubleZero RPC URL from `~/.config/doublezero/cli/config.yml`.
+fn read_dz_rpc_url() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::PathBuf::from(home)
+        .join(".config/doublezero/cli/config.yml");
+    let text = std::fs::read_to_string(path).ok()?;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("json_rpc_url:") {
+            let url = rest.trim().trim_matches('"').trim_matches('\'').to_string();
+            if !url.is_empty() {
+                return Some(url);
+            }
+        }
+    }
+    None
 }
