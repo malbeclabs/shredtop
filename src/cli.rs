@@ -103,16 +103,17 @@ pub enum Commands {
     /// Confirm that a specific validator is publishing shreds into a feed
     ///
     /// Subscribes to the configured shred sources, observes live traffic for the
-    /// specified duration, and reports how many shreds arrived during slots where
-    /// the given validator was the scheduled leader.
+    /// specified duration, and reports shred counts per source from the given IP.
+    /// The IP is the validator's client (public) IP; the DoubleZero tunnel IP is
+    /// resolved automatically.
     ///
     /// Example:
-    ///   shredtop check --validator DTSUkYHd2e9P2HLyZfbLarsbDdPhQUhZnWjRYuJZQRC8 --source rebop
+    ///   shredtop check --ip 94.158.242.125 --source rebop-eu
     Check {
-        /// Validator identity pubkey (base58)
+        /// Validator's client (public) IPv4 address
         #[clap(long)]
-        validator: String,
-        /// Source name to check (e.g. "rebop"). Defaults to all shred sources.
+        ip: String,
+        /// Source name to check (e.g. "rebop-eu"). Defaults to all shred sources.
         #[clap(long)]
         source: Option<String>,
         /// Observation window in seconds

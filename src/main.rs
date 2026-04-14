@@ -97,8 +97,8 @@ fn main() -> Result<()> {
         Commands::Uninstall => {
             uninstall::run(&cli.config)?;
         }
-        Commands::Check { validator, source, duration } => {
-            check::run(config.as_ref().unwrap(), &validator, source.as_deref(), duration)?;
+        Commands::Check { ip, source, duration } => {
+            check::run(config.as_ref().unwrap(), &ip, source.as_deref(), duration)?;
         }
     }
 

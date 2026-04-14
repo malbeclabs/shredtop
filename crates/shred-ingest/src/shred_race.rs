@@ -158,28 +158,19 @@ impl ShredPairMetrics {
 }
 
 // ---------------------------------------------------------------------------
-// Validator-specific per-source tracking
+// IP-based per-source shred counting
 // ---------------------------------------------------------------------------
 
-struct ValidatorSourceCount {
-    shreds: AtomicU64,
-    slots: DashMap<u64, ()>,
+struct IpFilter {
+    /// Wire-level source IP (dz_ip) to count shreds from.
+    target_ip: u32,
+    /// Per-source shred counts keyed by source name.
+    per_source: DashMap<&'static str, AtomicU64>,
 }
 
-impl ValidatorSourceCount {
-    fn new() -> Self {
-        Self { shreds: AtomicU64::new(0), slots: DashMap::new() }
-    }
-}
-
-struct ValidatorStats {
-    filter: Option<([u8; 32], Arc<crate::leader_cache::LeaderCache>)>,
-    per_source: DashMap<&'static str, ValidatorSourceCount>,
-}
-
-impl ValidatorStats {
-    fn new(filter: Option<([u8; 32], Arc<crate::leader_cache::LeaderCache>)>) -> Arc<Self> {
-        Arc::new(Self { filter, per_source: DashMap::new() })
+impl IpFilter {
+    fn new(target_ip: u32) -> Arc<Self> {
+        Arc::new(Self { target_ip, per_source: DashMap::new() })
     }
 }
 
@@ -319,7 +310,7 @@ pub struct ShredRaceTracker {
     tx: Sender<ShredArrival>,
     pairs: Arc<DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>>,
     publisher_tracker: Arc<PublisherTracker>,
-    validator_stats: Arc<ValidatorStats>,
+    ip_filter: Option<Arc<IpFilter>>,
 }
 
 impl ShredRaceTracker {
@@ -333,25 +324,25 @@ impl ShredRaceTracker {
     pub fn new(
         expected: usize,
         leader_cache: Option<Arc<LeaderCache>>,
-        validator_filter: Option<([u8; 32], Arc<LeaderCache>)>,
+        ip_filter: Option<u32>,
     ) -> Arc<Self> {
         let (tx, rx) = bounded::<ShredArrival>(4096);
         let arrivals: Arc<DashMap<(u64, u32), ShredFirstArrival>> = Arc::new(DashMap::new());
         let pairs: Arc<DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>> =
             Arc::new(DashMap::new());
         let publisher_tracker = PublisherTracker::new(leader_cache);
-        let validator_stats = ValidatorStats::new(validator_filter);
+        let ip_filter_arc = ip_filter.map(IpFilter::new);
 
         // Processing thread: drain channel, match arrivals, record wins.
         let arrivals_proc = arrivals.clone();
         let pairs_proc = pairs.clone();
         let pub_proc = publisher_tracker.clone();
-        let val_proc = validator_stats.clone();
+        let filter_proc = ip_filter_arc.clone();
         std::thread::Builder::new()
             .name("shred-race-proc".into())
             .spawn(move || {
                 for arrival in &rx {
-                    process_arrival(&arrivals_proc, &pairs_proc, &pub_proc, &val_proc, arrival, expected);
+                    process_arrival(&arrivals_proc, &pairs_proc, &pub_proc, filter_proc.as_deref(), arrival, expected);
                 }
             })
             .expect("failed to spawn shred-race-proc");
@@ -367,7 +358,7 @@ impl ShredRaceTracker {
             })
             .expect("failed to spawn shred-race-evict");
 
-        Arc::new(Self { tx, pairs, publisher_tracker, validator_stats })
+        Arc::new(Self { tx, pairs, publisher_tracker, ip_filter: ip_filter_arc })
     }
 
     /// Get a channel sender for use in a `ShredReceiver`.
@@ -388,17 +379,14 @@ impl ShredRaceTracker {
         self.publisher_tracker.snapshots()
     }
 
-    /// Returns `(source_name, shred_count, unique_slot_count)` for each source
-    /// that received shreds during the configured validator's leader slots.
-    /// Empty when no validator filter is set.
-    pub fn validator_source_counts(&self) -> Vec<(String, u64, u64)> {
-        self.validator_stats.per_source.iter()
-            .map(|e| (
-                e.key().to_string(),
-                e.value().shreds.load(Relaxed),
-                e.value().slots.len() as u64,
-            ))
-            .collect()
+    /// Returns `(source_name, shred_count)` for each source that received shreds
+    /// from the configured target IP. Empty when no IP filter is set.
+    pub fn validator_source_counts(&self) -> Vec<(String, u64)> {
+        self.ip_filter.as_ref().map(|f| {
+            f.per_source.iter()
+                .map(|e| (e.key().to_string(), e.value().load(Relaxed)))
+                .collect()
+        }).unwrap_or_default()
     }
 
     /// Record a transaction-level (signature-matched) cross-tier race result.
@@ -432,7 +420,7 @@ fn process_arrival(
     arrivals: &DashMap<(u64, u32), ShredFirstArrival>,
     pairs: &DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>,
     pub_tracker: &PublisherTracker,
-    validator_stats: &Arc<ValidatorStats>,
+    ip_filter: Option<&IpFilter>,
     arrival: ShredArrival,
     expected: usize,
 ) {
@@ -442,24 +430,13 @@ fn process_arrival(
     // Record every arrival for per-IP totals (including retransmitters).
     pub_tracker.record_arrival(src_ip, recv_ns);
 
-    // Validator-specific per-source tracking.
-    // SHREDS: IP-based — counts shreds forwarded by this validator's node (works for
-    //         both direct feeds and retransmit groups where src_ip is the retransmitter).
-    // SLOTS:  slot-based — counts unique leader slots (non-zero only when validator leads).
-    if let Some((ref filter_pk, ref cache)) = validator_stats.filter {
-        let ip_match = cache.pubkey_for_ip(src_ip).as_ref() == Some(filter_pk);
-        let slot_match = cache.leader_for_slot(slot).as_ref() == Some(filter_pk);
-        if ip_match {
-            let entry = validator_stats.per_source
+    // IP filter: count shreds from the target wire-level src_ip.
+    if let Some(filter) = ip_filter {
+        if src_ip == filter.target_ip {
+            filter.per_source
                 .entry(source)
-                .or_insert_with(ValidatorSourceCount::new);
-            entry.shreds.fetch_add(1, Relaxed);
-        }
-        if slot_match {
-            let entry = validator_stats.per_source
-                .entry(source)
-                .or_insert_with(ValidatorSourceCount::new);
-            entry.slots.insert(slot, ());
+                .or_insert_with(|| AtomicU64::new(0))
+                .fetch_add(1, Relaxed);
         }
     }
 

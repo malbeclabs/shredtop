@@ -106,7 +106,7 @@ pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Resul
     fan_in.filter_programs = config.filter_programs.clone();
     fan_in.leader_cache = config.leader_filter.as_ref()
         .filter(|lf| lf.enabled)
-        .map(|lf| LeaderCache::new(&lf.rpc_url, lf.dz_rpc_url.as_deref()));
+        .map(|lf| LeaderCache::new(&lf.rpc_url));
     for entry in &config.sources {
         let (source, metrics) = build_source(entry, cap_tx.clone())?;
         fan_in.add_source(source, metrics);

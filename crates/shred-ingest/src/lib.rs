@@ -21,7 +21,7 @@ pub use jetstream_source::JetstreamTxSource;
 pub use jito_source::JitoShredstreamSource;
 pub use receiver::{CaptureEvent, ShredReceiver};
 pub use rpc_source::RpcSource;
-pub use leader_cache::LeaderCache;
+pub use leader_cache::{LeaderCache, resolve_dz_tunnel_ip};
 pub use shred_race::{IpSnapshot, ShredPairSnapshot, ShredRaceTracker};
 pub use source::{start_source, SourceConfig};
 pub use source_metrics::{SlotOutcome, SlotStats, SourceMetrics, SourceMetricsSnapshot};
