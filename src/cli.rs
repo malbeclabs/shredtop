@@ -100,6 +100,26 @@ pub enum Commands {
         min_matched: u64,
     },
 
+    /// Confirm that a specific validator is publishing shreds into a feed
+    ///
+    /// Subscribes to the configured shred sources, observes live traffic for the
+    /// specified duration, and reports how many shreds arrived during slots where
+    /// the given validator was the scheduled leader.
+    ///
+    /// Example:
+    ///   shredtop check --validator DTSUkYHd2e9P2HLyZfbLarsbDdPhQUhZnWjRYuJZQRC8 --source rebop
+    Check {
+        /// Validator identity pubkey (base58)
+        #[clap(long)]
+        validator: String,
+        /// Source name to check (e.g. "rebop"). Defaults to all shred sources.
+        #[clap(long)]
+        source: Option<String>,
+        /// Observation window in seconds
+        #[clap(long, default_value = "60")]
+        duration: u64,
+    },
+
     /// Background data collection daemon (used by the systemd service)
     #[clap(hide = true)]
     Run {

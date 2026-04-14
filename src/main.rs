@@ -14,9 +14,10 @@ use tracing_subscriber::EnvFilter;
 mod analyze;
 mod bench;
 mod capture;
-mod color;
 mod capture_status;
+mod check;
 mod cli;
+mod color;
 mod config;
 mod discover;
 mod metrics_server;
@@ -95,6 +96,9 @@ fn main() -> Result<()> {
         }
         Commands::Uninstall => {
             uninstall::run(&cli.config)?;
+        }
+        Commands::Check { validator, source, duration } => {
+            check::run(config.as_ref().unwrap(), &validator, source.as_deref(), duration)?;
         }
     }
 

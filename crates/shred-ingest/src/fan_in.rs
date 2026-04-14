@@ -385,11 +385,14 @@ pub struct FanInSource {
     /// Optional leader schedule cache. When set, publisher IP stats are restricted
     /// to shreds whose source IP is the scheduled slot leader.
     pub leader_cache: Option<Arc<LeaderCache>>,
+    /// Optional validator filter: `(pubkey_bytes, leader_cache)`. When set, the race
+    /// tracker counts per-source shreds that arrive during this validator's leader slots.
+    pub validator_filter: Option<([u8; 32], Arc<LeaderCache>)>,
 }
 
 impl FanInSource {
     pub fn new() -> Self {
-        Self { sources: Vec::new(), filter_programs: Vec::new(), leader_cache: None }
+        Self { sources: Vec::new(), filter_programs: Vec::new(), leader_cache: None, validator_filter: None }
     }
 
     pub fn add_source(&mut self, source: Box<dyn TxSource>, metrics: Arc<SourceMetrics>) {
@@ -407,7 +410,7 @@ impl FanInSource {
         let mut all_metrics: Vec<Arc<SourceMetrics>> = Vec::new();
 
         let shred_source_count = self.sources.iter().filter(|(s, _)| !s.is_rpc()).count();
-        let race_tracker = ShredRaceTracker::new(shred_source_count, self.leader_cache);
+        let race_tracker = ShredRaceTracker::new(shred_source_count, self.leader_cache, self.validator_filter);
 
         // Parse filter programs once at start time; shared across relay threads.
         let filter_set: Arc<HashSet<Pubkey>> = Arc::new(

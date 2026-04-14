@@ -135,6 +135,11 @@ impl LeaderCache {
     pub fn slot_known(&self, slot: u64) -> bool {
         self.slot_to_pubkey.contains_key(&slot)
     }
+
+    /// Returns the scheduled leader pubkey bytes for `slot`, or `None` if not in cache.
+    pub fn leader_for_slot(&self, slot: u64) -> Option<[u8; 32]> {
+        self.slot_to_pubkey.get(&slot).map(|pk| *pk)
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -26,3 +26,11 @@ pub use shred_race::{IpSnapshot, ShredPairSnapshot, ShredRaceTracker};
 pub use source::{start_source, SourceConfig};
 pub use source_metrics::{SlotOutcome, SlotStats, SourceMetrics, SourceMetricsSnapshot};
 pub use thor_source::ThorTxSource;
+
+/// Parse a base58-encoded Solana pubkey string into 32 raw bytes.
+pub fn parse_pubkey(s: &str) -> anyhow::Result<[u8; 32]> {
+    use std::str::FromStr;
+    let pk = solana_pubkey::Pubkey::from_str(s)
+        .map_err(|e| anyhow::anyhow!("invalid pubkey '{}': {}", s, e))?;
+    Ok(pk.to_bytes())
+}

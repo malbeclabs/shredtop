@@ -158,6 +158,32 @@ impl ShredPairMetrics {
 }
 
 // ---------------------------------------------------------------------------
+// Validator-specific per-source tracking
+// ---------------------------------------------------------------------------
+
+struct ValidatorSourceCount {
+    shreds: AtomicU64,
+    slots: DashMap<u64, ()>,
+}
+
+impl ValidatorSourceCount {
+    fn new() -> Self {
+        Self { shreds: AtomicU64::new(0), slots: DashMap::new() }
+    }
+}
+
+struct ValidatorStats {
+    filter: Option<([u8; 32], Arc<crate::leader_cache::LeaderCache>)>,
+    per_source: DashMap<&'static str, ValidatorSourceCount>,
+}
+
+impl ValidatorStats {
+    fn new(filter: Option<([u8; 32], Arc<crate::leader_cache::LeaderCache>)>) -> Arc<Self> {
+        Arc::new(Self { filter, per_source: DashMap::new() })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Per-IP publisher tracking
 // ---------------------------------------------------------------------------
 
@@ -293,6 +319,7 @@ pub struct ShredRaceTracker {
     tx: Sender<ShredArrival>,
     pairs: Arc<DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>>,
     publisher_tracker: Arc<PublisherTracker>,
+    validator_stats: Arc<ValidatorStats>,
 }
 
 impl ShredRaceTracker {
@@ -303,22 +330,28 @@ impl ShredRaceTracker {
     ///
     /// `leader_cache`: when `Some`, publisher IP stats are only recorded for
     /// shreds whose source IP matches the scheduled slot leader.
-    pub fn new(expected: usize, leader_cache: Option<Arc<LeaderCache>>) -> Arc<Self> {
+    pub fn new(
+        expected: usize,
+        leader_cache: Option<Arc<LeaderCache>>,
+        validator_filter: Option<([u8; 32], Arc<LeaderCache>)>,
+    ) -> Arc<Self> {
         let (tx, rx) = bounded::<ShredArrival>(4096);
         let arrivals: Arc<DashMap<(u64, u32), ShredFirstArrival>> = Arc::new(DashMap::new());
         let pairs: Arc<DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>> =
             Arc::new(DashMap::new());
         let publisher_tracker = PublisherTracker::new(leader_cache);
+        let validator_stats = ValidatorStats::new(validator_filter);
 
         // Processing thread: drain channel, match arrivals, record wins.
         let arrivals_proc = arrivals.clone();
         let pairs_proc = pairs.clone();
         let pub_proc = publisher_tracker.clone();
+        let val_proc = validator_stats.clone();
         std::thread::Builder::new()
             .name("shred-race-proc".into())
             .spawn(move || {
                 for arrival in &rx {
-                    process_arrival(&arrivals_proc, &pairs_proc, &pub_proc, arrival, expected);
+                    process_arrival(&arrivals_proc, &pairs_proc, &pub_proc, &val_proc, arrival, expected);
                 }
             })
             .expect("failed to spawn shred-race-proc");
@@ -334,7 +367,7 @@ impl ShredRaceTracker {
             })
             .expect("failed to spawn shred-race-evict");
 
-        Arc::new(Self { tx, pairs, publisher_tracker })
+        Arc::new(Self { tx, pairs, publisher_tracker, validator_stats })
     }
 
     /// Get a channel sender for use in a `ShredReceiver`.
@@ -353,6 +386,19 @@ impl ShredRaceTracker {
     /// Snapshot per-source-IP publisher stats; sorted by wins descending.
     pub fn ip_snapshots(&self) -> Vec<IpSnapshot> {
         self.publisher_tracker.snapshots()
+    }
+
+    /// Returns `(source_name, shred_count, unique_slot_count)` for each source
+    /// that received shreds during the configured validator's leader slots.
+    /// Empty when no validator filter is set.
+    pub fn validator_source_counts(&self) -> Vec<(String, u64, u64)> {
+        self.validator_stats.per_source.iter()
+            .map(|e| (
+                e.key().to_string(),
+                e.value().shreds.load(Relaxed),
+                e.value().slots.len() as u64,
+            ))
+            .collect()
     }
 
     /// Record a transaction-level (signature-matched) cross-tier race result.
@@ -386,6 +432,7 @@ fn process_arrival(
     arrivals: &DashMap<(u64, u32), ShredFirstArrival>,
     pairs: &DashMap<(&'static str, &'static str), Arc<ShredPairMetrics>>,
     pub_tracker: &PublisherTracker,
+    validator_stats: &Arc<ValidatorStats>,
     arrival: ShredArrival,
     expected: usize,
 ) {
@@ -394,6 +441,17 @@ fn process_arrival(
 
     // Record every arrival for per-IP totals (including retransmitters).
     pub_tracker.record_arrival(src_ip, recv_ns);
+
+    // Validator-specific per-source tracking (slot-based, independent of IP filter).
+    if let Some((ref filter_pk, ref cache)) = validator_stats.filter {
+        if cache.leader_for_slot(slot).as_ref() == Some(filter_pk) {
+            let entry = validator_stats.per_source
+                .entry(source)
+                .or_insert_with(ValidatorSourceCount::new);
+            entry.shreds.fetch_add(1, Relaxed);
+            entry.slots.insert(slot, ());
+        }
+    }
 
     // Only count leader-originated shreds for the race.
     if !pub_tracker.is_leader(slot, src_ip) {
