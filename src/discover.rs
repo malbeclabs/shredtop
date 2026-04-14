@@ -5,7 +5,7 @@
 //! installed. On completion, offers to write detected sources back to probe.toml.
 
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
@@ -46,7 +46,17 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
             println!("  No groups returned by doublezero CLI.");
         }
         Some(groups) => {
-            // Print table with [subscribed] marker
+            // DoubleZero multicast subscriptions operate at the DoubleZero network
+            // layer, not via kernel IGMP — so 233.84.178.x groups never appear in
+            // `ip maddr show`. Use the current probe.toml as the "configured" signal
+            // instead: groups already in the config are pre-selected as the default.
+            let configured_ips: HashSet<String> = config
+                .sources
+                .iter()
+                .filter_map(|s| s.multicast_addr.clone())
+                .collect();
+
+            // Print table with [configured] marker
             println!(
                 "  {:<4} {:<22} {:<16} {:>4} {:>4}  {:<12}  {}",
                 "#", "CODE", "MULTICAST IP", "PUB", "SUB", "STATUS", ""
@@ -55,12 +65,12 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
             let subscribed_indices: Vec<usize> = groups
                 .iter()
                 .enumerate()
-                .filter(|(_, g)| memberships.contains_key(&g.multicast_ip))
+                .filter(|(_, g)| configured_ips.contains(&g.multicast_ip))
                 .map(|(i, _)| i)
                 .collect();
             for (i, g) in groups.iter().enumerate() {
-                let marker = if memberships.contains_key(&g.multicast_ip) {
-                    color::green("[subscribed]")
+                let marker = if configured_ips.contains(&g.multicast_ip) {
+                    color::green("[configured]")
                 } else {
                     String::new()
                 };
@@ -117,14 +127,20 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
             };
 
             if !selected_indices.is_empty() {
-                // Sniff ports from live traffic for selected groups that are subscribed
+                // Sniff ports from live traffic for all selected groups.
+                // DoubleZero groups never appear in kernel IGMP memberships, so we
+                // fall back to the detected doublezero interface for those.
+                let dz_iface = detect_doublezero_iface()
+                    .unwrap_or_else(|| "doublezero1".to_string());
                 let needs_sniff: Vec<(String, String)> = selected_indices
                     .iter()
-                    .filter_map(|&i| {
+                    .map(|&i| {
                         let g = &groups[i];
-                        memberships
+                        let iface = memberships
                             .get(&g.multicast_ip)
-                            .map(|iface| (g.multicast_ip.clone(), iface.clone()))
+                            .cloned()
+                            .unwrap_or_else(|| dz_iface.clone());
+                        (g.multicast_ip.clone(), iface)
                     })
                     .collect();
 
@@ -403,10 +419,54 @@ struct DzGroup {
 /// Used as a fallback when traffic sniffing finds no packets within the timeout.
 fn known_port_for_group(code: &str) -> Option<u16> {
     match code {
-        "edge-solana-shreds" => Some(7733),
+        "bebop" | "edge-solana-shreds" | "rebop" | "rebop-eu" | "rebop-amer" | "rebop-apac" => {
+            Some(7733)
+        }
         "jito-shredstream" => Some(20001),
-        "rebop" | "rebop-amer" | "rebop-apac" | "rebop-eu" => Some(7744),
         _ => None,
+    }
+}
+
+/// Detect the UP doublezero tunnel interface to use for multicast port sniffing.
+///
+/// DoubleZero multicast subscriptions don't register with the kernel IGMP stack,
+/// so the correct interface must be found from `ip link` rather than `ip maddr`.
+/// Returns the highest-numbered UP doublezero* interface (the multicast tunnel is
+/// always provisioned after the IBRL tunnel, so it has the higher index).
+fn detect_doublezero_iface() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let output = Command::new("ip").args(["link", "show"]).output().ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut candidates: Vec<String> = Vec::new();
+        for line in text.lines() {
+            // Interface lines start with a digit: "49: doublezero1@NONE: <...UP...>"
+            if !line.starts_with(|c: char| c.is_ascii_digit()) {
+                continue;
+            }
+            let name_part = line.split_whitespace().nth(1)?;
+            let name = name_part.trim_end_matches(':').split('@').next()?.to_string();
+            if !name.starts_with("doublezero") {
+                continue;
+            }
+            // Check the flags field (between < and >) for the UP flag.
+            let flags_start = line.find('<').unwrap_or(line.len());
+            let flags_end =
+                line[flags_start..].find('>').map(|i| flags_start + i).unwrap_or(line.len());
+            let is_up = line[flags_start..flags_end]
+                .split([',', '<'])
+                .any(|f| f == "UP");
+            if is_up {
+                candidates.push(name);
+            }
+        }
+        // Highest-numbered interface is the multicast tunnel.
+        candidates.sort();
+        candidates.into_iter().last()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
     }
 }
 
