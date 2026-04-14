@@ -200,17 +200,23 @@ fn refresh(
 ///
 /// Returns `Some(dz_ip)` for a multicast publisher account (dz_ip ≠ client_ip).
 /// Returns `None` if no matching account is found or only IBRL accounts exist.
-pub fn resolve_dz_tunnel_ip(dz_rpc_url: &str, client_ip: u32) -> anyhow::Result<Option<u32>> {
+///
+/// The returned `Ipv4Addr` can be converted to the `u32` format used by `s_addr`
+/// (and thus `ShredArrival::src_ip`) via `u32::from_ne_bytes(addr.octets())`.
+pub fn resolve_dz_tunnel_ip(
+    dz_rpc_url: &str,
+    client_ip: std::net::Ipv4Addr,
+) -> anyhow::Result<Option<std::net::Ipv4Addr>> {
     let client = RpcClient::new(dz_rpc_url.to_string());
     let program_id = Pubkey::from_str(DZ_SERVICEABILITY_PROGRAM)?;
-    let client_ip_bytes = client_ip.to_be_bytes();
 
     let config = RpcProgramAccountsConfig {
         filters: Some(vec![
             RpcFilterType::Memcmp(Memcmp::new_raw_bytes(0, vec![DZ_USER_DISCRIMINATOR])),
+            // Match client_ip bytes at offset 116 (network byte order = same as octets).
             RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
                 DZ_CLIENT_IP_OFFSET,
-                client_ip_bytes.to_vec(),
+                client_ip.octets().to_vec(),
             )),
         ]),
         account_config: RpcAccountInfoConfig {
@@ -226,11 +232,10 @@ pub fn resolve_dz_tunnel_ip(dz_rpc_url: &str, client_ip: u32) -> anyhow::Result<
         if account.data.len() < DZ_DZ_IP_OFFSET + 4 {
             continue;
         }
-        let dz_ip = u32::from_be_bytes(
-            account.data[DZ_DZ_IP_OFFSET..DZ_DZ_IP_OFFSET + 4]
-                .try_into()
-                .unwrap(),
-        );
+        let dz_octets: [u8; 4] = account.data[DZ_DZ_IP_OFFSET..DZ_DZ_IP_OFFSET + 4]
+            .try_into()
+            .unwrap();
+        let dz_ip = std::net::Ipv4Addr::from(dz_octets);
         // Return the multicast publisher account (dz_ip ≠ client_ip).
         // Skip IBRL accounts where the tunnel IP equals the public IP.
         if dz_ip != client_ip {

@@ -21,8 +21,6 @@ pub fn run(
     let client_ip: std::net::Ipv4Addr = client_ip_str
         .parse()
         .with_context(|| format!("--ip: invalid IPv4 address '{}'", client_ip_str))?;
-    let client_ip_u32 = u32::from_be_bytes(client_ip.octets());
-
     // Resolve DZ tunnel IP (the wire-level src_ip on DZ multicast packets).
     let dz_rpc = read_dz_rpc_url().ok_or_else(|| {
         anyhow::anyhow!(
@@ -34,11 +32,11 @@ pub fn run(
     print!("Resolving DZ tunnel IP for {}...", client_ip_str);
     std::io::Write::flush(&mut std::io::stdout()).ok();
 
-    let wire_ip_u32 = shred_ingest::resolve_dz_tunnel_ip(&dz_rpc, client_ip_u32)?
-        .unwrap_or(client_ip_u32);
-    let wire_ip_str = std::net::Ipv4Addr::from(wire_ip_u32.to_be_bytes()).to_string();
+    let wire_ip = shred_ingest::resolve_dz_tunnel_ip(&dz_rpc, client_ip)?
+        .unwrap_or(client_ip);
+    let wire_ip_str = wire_ip.to_string();
 
-    if wire_ip_u32 == client_ip_u32 {
+    if wire_ip == client_ip {
         println!(" no tunnel found, using {} directly", wire_ip_str);
     } else {
         println!(" {} (dz_ip)", wire_ip_str);
@@ -78,7 +76,8 @@ pub fn run(
 
     // Build FanInSource with IP filter.
     let mut fan_in = FanInSource::new();
-    fan_in.ip_filter = Some(wire_ip_u32);
+    // Use from_ne_bytes: s_addr on Linux x86_64 stores NBO bytes read as native LE u32.
+    fan_in.ip_filter = Some(u32::from_ne_bytes(wire_ip.octets()));
 
     for entry in &selected {
         let (source, metrics) = build_source(entry, None)?;
