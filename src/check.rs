@@ -42,7 +42,9 @@ pub fn run(
         })?;
 
     // Start the leader cache (background thread).
-    let leader_cache = LeaderCache::new(&rpc_url, None);
+    // Use the same RPC for DZ serviceability accounts — the local node has
+    // --full-rpc-api so getProgramAccounts works, unlike public endpoints.
+    let leader_cache = LeaderCache::new(&rpc_url, Some(&rpc_url));
 
     // Select shred sources.
     let selected: Vec<_> = config
