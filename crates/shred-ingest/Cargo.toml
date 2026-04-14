@@ -9,6 +9,7 @@ solana-transaction = { workspace = true }
 solana-commitment-config = { workspace = true }
 solana-entry = { workspace = true }
 solana-client = { workspace = true }
+solana-account-decoder-client-types = { workspace = true }
 solana-transaction-status = { workspace = true }
 solana-signature = { workspace = true }
 solana-message = { workspace = true }

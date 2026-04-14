@@ -15,7 +15,8 @@
 
 use dashmap::DashMap;
 use solana_client::rpc_client::RpcClient;
-use solana_client::rpc_config::RpcProgramAccountsConfig;
+use solana_account_decoder_client_types::UiAccountEncoding;
+use solana_client::rpc_config::{RpcAccountInfoConfig, RpcProgramAccountsConfig};
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use solana_pubkey::Pubkey;
 use std::collections::HashMap;
@@ -266,6 +267,10 @@ fn refresh_access_pass(dz_client: &RpcClient, cache: &LeaderCache) -> anyhow::Re
                 DZ_ACCESS_PASS_DISCRIMINATOR.to_vec(),
             )),
         ]),
+        account_config: RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
