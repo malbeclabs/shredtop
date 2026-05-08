@@ -142,10 +142,8 @@ async fn run_jito_shredstream(
     let codec = tonic_prost::ProstCodec::<SubscribeEntriesRequest, JitoEntry>::default();
 
     let req = tonic::Request::new(SubscribeEntriesRequest {});
-    let mut stream: tonic::codec::Streaming<JitoEntry> = grpc
-        .server_streaming(req, path, codec)
-        .await?
-        .into_inner();
+    let mut stream: tonic::codec::Streaming<JitoEntry> =
+        grpc.server_streaming(req, path, codec).await?.into_inner();
 
     while let Some(msg) = stream.next().await {
         let msg = msg?;

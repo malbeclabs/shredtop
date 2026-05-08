@@ -366,7 +366,7 @@ mod tests {
         m.record_lead_time_us(2_000_001); // outlier, discarded
         m.record_lead_time_us(6_724_000); // outlier, discarded
         m.record_lead_time_us(4_994_000); // outlier, discarded
-        m.record_lead_time_us(-500_001);  // outlier, discarded
+        m.record_lead_time_us(-500_001); // outlier, discarded
         assert_eq!(m.lead_time_count.load(Relaxed), 2);
         let snap = m.snapshot();
         assert!(snap.lead_time_p50_us.is_some());

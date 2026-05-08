@@ -97,8 +97,7 @@ impl TxSource for ThorTxSource {
 
                 rt.block_on(async move {
                     loop {
-                        if let Err(e) =
-                            run_thor(&url, &x_token, tx.clone(), metrics.clone()).await
+                        if let Err(e) = run_thor(&url, &x_token, tx.clone(), metrics.clone()).await
                         {
                             tracing::warn!(
                                 "thor source '{}' disconnected: {}  reconnecting in 5s",
@@ -152,10 +151,8 @@ async fn run_thor(
             req.metadata_mut().insert("x-token", val);
         }
     }
-    let mut stream: tonic::codec::Streaming<ThorTransactionNotification> = grpc
-        .server_streaming(req, path, codec)
-        .await?
-        .into_inner();
+    let mut stream: tonic::codec::Streaming<ThorTransactionNotification> =
+        grpc.server_streaming(req, path, codec).await?.into_inner();
 
     while let Some(msg) = stream.next().await {
         let msg = msg?;

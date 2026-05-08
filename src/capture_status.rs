@@ -24,7 +24,10 @@ pub fn run(config_path: &Path) -> Result<()> {
 
     let output_dir = Path::new(&cap.output_dir);
     if !output_dir.exists() {
-        println!("Capture directory {} does not exist yet.", output_dir.display());
+        println!(
+            "Capture directory {} does not exist yet.",
+            output_dir.display()
+        );
         println!("Start the service to begin capture: shredtop service start");
         return Ok(());
     }
@@ -52,7 +55,10 @@ pub fn run(config_path: &Path) -> Result<()> {
     files.sort_by_key(|p| archive_generation(p));
 
     let mut total_bytes: u64 = 0;
-    println!("{}", color::bold_cyan(&format!("CAPTURE RING  {}", output_dir.display())));
+    println!(
+        "{}",
+        color::bold_cyan(&format!("CAPTURE RING  {}", output_dir.display()))
+    );
 
     for path in &files {
         let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);

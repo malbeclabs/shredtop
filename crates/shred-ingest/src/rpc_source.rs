@@ -39,7 +39,11 @@ impl RpcSource {
             .replacen("http://", "ws://", 1);
         let ws_url = probe_ws_url(&raw_ws);
         tracing::info!("RPC source: will subscribe via {}", ws_url);
-        Ok(Self { ws_url, tx, metrics })
+        Ok(Self {
+            ws_url,
+            tx,
+            metrics,
+        })
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -49,7 +53,8 @@ impl RpcSource {
 
         rt.block_on(async {
             loop {
-                match run_logs_subscribe(&self.ws_url, self.tx.clone(), self.metrics.clone()).await {
+                match run_logs_subscribe(&self.ws_url, self.tx.clone(), self.metrics.clone()).await
+                {
                     Ok(()) => {}
                     Err(e) => {
                         tracing::warn!(
@@ -114,7 +119,9 @@ fn probe_ws_url(ws_url: &str) -> String {
         .strip_prefix("wss://")
         .or_else(|| ws_url.strip_prefix("ws://"))
         .unwrap_or(ws_url);
-    let (host_port, _) = without_scheme.split_once('/').unwrap_or((without_scheme, ""));
+    let (host_port, _) = without_scheme
+        .split_once('/')
+        .unwrap_or((without_scheme, ""));
     let (host, port_str) = host_port.rsplit_once(':').unwrap_or((host_port, ""));
     let port: u16 = match port_str.parse() {
         Ok(p) => p,
@@ -128,7 +135,11 @@ fn probe_ws_url(ws_url: &str) -> String {
     let alt = port + 1;
     if try_ws_handshake(host, alt) {
         let alt_url = ws_url.replacen(&format!(":{}", port), &format!(":{}", alt), 1);
-        tracing::info!("rpc_source: WebSocket not on :{}, using :{} (rpc-pubsub-port)", port, alt);
+        tracing::info!(
+            "rpc_source: WebSocket not on :{}, using :{} (rpc-pubsub-port)",
+            port,
+            alt
+        );
         return alt_url;
     }
 

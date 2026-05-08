@@ -9,9 +9,9 @@
 //! both deliver the same transaction, their receive timestamps are compared to compute
 //! the shred lead time (positive = shred arrived before RPC).
 
-use crossbeam_channel::Sender;
 use crate::leader_cache::LeaderCache;
 use crate::receiver::CaptureEvent;
+use crossbeam_channel::Sender;
 use dashmap::DashMap;
 use solana_pubkey::Pubkey;
 use std::collections::HashSet;
@@ -400,7 +400,11 @@ pub struct FanInSource {
 
 impl FanInSource {
     pub fn new() -> Self {
-        Self { sources: Vec::new(), filter_programs: Vec::new(), leader_cache: None }
+        Self {
+            sources: Vec::new(),
+            filter_programs: Vec::new(),
+            leader_cache: None,
+        }
     }
 
     pub fn add_source(&mut self, source: Box<dyn TxSource>, metrics: Arc<SourceMetrics>) {
@@ -412,7 +416,11 @@ impl FanInSource {
     pub fn start(
         self,
         out_tx: Sender<DecodedTx>,
-    ) -> (Vec<Arc<SourceMetrics>>, Arc<ShredRaceTracker>, Vec<JoinHandle<()>>) {
+    ) -> (
+        Vec<Arc<SourceMetrics>>,
+        Arc<ShredRaceTracker>,
+        Vec<JoinHandle<()>>,
+    ) {
         let dedup: Arc<DashMap<[u8; 64], FirstArrival>> = Arc::new(DashMap::new());
         let mut all_handles: Vec<JoinHandle<()>> = Vec::new();
         let mut all_metrics: Vec<Arc<SourceMetrics>> = Vec::new();
@@ -434,7 +442,11 @@ impl FanInSource {
             let (inner_tx, inner_rx) = crossbeam_channel::bounded::<DecodedTx>(4096);
 
             // Pass the race tracker to shred-tier sources; None for RPC-tier.
-            let race_arg = if !source_is_rpc { Some(race_tracker.clone()) } else { None };
+            let race_arg = if !source_is_rpc {
+                Some(race_tracker.clone())
+            } else {
+                None
+            };
             let source_handles = source.start(inner_tx, source_metrics.clone(), race_arg);
             all_handles.extend(source_handles);
             all_metrics.push(source_metrics.clone());
@@ -495,24 +507,19 @@ impl FanInSource {
                                                 - decoded.shred_recv_ns as i64)
                                                 / 1000;
                                             // Adjust sum: remove old contribution, add corrected
-                                            e.get().metrics.lead_time_sum_us.fetch_sub(
-                                                ct.old_lead_us,
-                                                Relaxed,
-                                            );
+                                            e.get()
+                                                .metrics
+                                                .lead_time_sum_us
+                                                .fetch_sub(ct.old_lead_us, Relaxed);
                                             source_metrics
                                                 .lead_time_sum_us
                                                 .fetch_add(new_lead_us, Relaxed);
                                             // Adjust win count if direction changed
                                             if ct.old_lead_us > 0 {
-                                                e.get()
-                                                    .metrics
-                                                    .lead_wins
-                                                    .fetch_sub(1, Relaxed);
+                                                e.get().metrics.lead_wins.fetch_sub(1, Relaxed);
                                             }
                                             if new_lead_us > 0 {
-                                                source_metrics
-                                                    .lead_wins
-                                                    .fetch_add(1, Relaxed);
+                                                source_metrics.lead_wins.fetch_add(1, Relaxed);
                                             }
                                             // Push corrected sample to reservoir; old ages out
                                             source_metrics

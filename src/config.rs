@@ -45,7 +45,9 @@ pub struct LeaderFilterConfig {
 }
 
 impl LeaderFilterConfig {
-    fn default_enabled() -> bool { true }
+    fn default_enabled() -> bool {
+        true
+    }
 }
 
 /// Configuration for the optional Prometheus metrics HTTP endpoint.
@@ -60,12 +62,17 @@ pub struct MetricsConfig {
 }
 
 impl MetricsConfig {
-    fn default_port() -> u16 { 9090 }
+    fn default_port() -> u16 {
+        9090
+    }
 }
 
 impl Default for MetricsConfig {
     fn default() -> Self {
-        Self { enabled: false, port: Self::default_port() }
+        Self {
+            enabled: false,
+            port: Self::default_port(),
+        }
     }
 }
 
@@ -93,10 +100,18 @@ pub struct CaptureConfig {
 }
 
 impl CaptureConfig {
-    fn default_enabled() -> bool { true }
-    fn default_formats() -> Vec<String> { vec!["pcap".into()] }
-    fn default_output_dir() -> String { "/var/log/shredtop-capture".into() }
-    fn default_rotate_mb() -> u64 { 500 }
+    fn default_enabled() -> bool {
+        true
+    }
+    fn default_formats() -> Vec<String> {
+        vec!["pcap".into()]
+    }
+    fn default_output_dir() -> String {
+        "/var/log/shredtop-capture".into()
+    }
+    fn default_rotate_mb() -> u64 {
+        500
+    }
 
     /// Number of ring files to keep for format at `idx`.
     /// Derived from `max_size_mb[idx] / rotate_mb`, minimum 2.

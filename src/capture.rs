@@ -74,10 +74,16 @@ impl RotationState {
     /// Rename the active file to the next archive slot; evict oldest if needed.
     fn rotate(&mut self) -> io::Result<()> {
         let active = self.active_path();
-        let archive = self.dir.join(format!("shreds.{}.{}", self.ext, self.next_gen));
+        let archive = self
+            .dir
+            .join(format!("shreds.{}.{}", self.ext, self.next_gen));
         if active.exists() {
             fs::rename(&active, &archive)?;
-            info!("capture: archived {} → {}", active.display(), archive.display());
+            info!(
+                "capture: archived {} → {}",
+                active.display(),
+                archive.display()
+            );
         }
         self.ring.push_back(archive);
         self.next_gen += 1;
@@ -111,7 +117,10 @@ impl PcapCaptureWriter {
         fs::create_dir_all(output_dir)?;
         let rotation = RotationState::new(output_dir, "pcap", rotate_mb, ring_files);
         let writer = open_pcap_writer(&rotation.active_path())?;
-        Ok(Self { writer: Some(writer), rotation })
+        Ok(Self {
+            writer: Some(writer),
+            rotation,
+        })
     }
 }
 
@@ -149,22 +158,38 @@ fn build_frame(dst_ip: [u8; 4], dst_port: u16, payload: &[u8]) -> Vec<u8> {
 
     // IPv4 header (20 bytes, no options, checksum=0).
     let ip_hdr = [
-        0x45, 0x00,
-        ip_total[0], ip_total[1],
-        0x00, 0x00, // ID
-        0x00, 0x00, // flags/fragment
-        64, 0x11,   // TTL=64, proto=UDP
-        0x00, 0x00, // checksum
-        0x00, 0x00, 0x00, 0x00, // src=0.0.0.0
-        dst_ip[0], dst_ip[1], dst_ip[2], dst_ip[3],
+        0x45,
+        0x00,
+        ip_total[0],
+        ip_total[1],
+        0x00,
+        0x00, // ID
+        0x00,
+        0x00, // flags/fragment
+        64,
+        0x11, // TTL=64, proto=UDP
+        0x00,
+        0x00, // checksum
+        0x00,
+        0x00,
+        0x00,
+        0x00, // src=0.0.0.0
+        dst_ip[0],
+        dst_ip[1],
+        dst_ip[2],
+        dst_ip[3],
     ];
 
     // UDP header (8 bytes).
     let udp_hdr = [
-        0x00, 0x00, // src port=0
-        (dst_port >> 8) as u8, dst_port as u8,
-        udp_len[0], udp_len[1],
-        0x00, 0x00, // checksum=0
+        0x00,
+        0x00, // src port=0
+        (dst_port >> 8) as u8,
+        dst_port as u8,
+        udp_len[0],
+        udp_len[1],
+        0x00,
+        0x00, // checksum=0
     ];
 
     let mut frame = Vec::with_capacity(14 + 20 + 8 + payload.len());

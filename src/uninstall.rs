@@ -48,8 +48,12 @@ pub fn run(config_path: &Path) -> Result<()> {
 
     // 1. Stop and remove systemd service
     step("Stopping service", || {
-        let _ = Command::new("systemctl").args(["stop", "shredtop"]).status();
-        let _ = Command::new("systemctl").args(["disable", "shredtop"]).status();
+        let _ = Command::new("systemctl")
+            .args(["stop", "shredtop"])
+            .status();
+        let _ = Command::new("systemctl")
+            .args(["disable", "shredtop"])
+            .status();
         let unit = "/etc/systemd/system/shredtop.service";
         if Path::new(unit).exists() {
             std::fs::remove_file(unit)?;
@@ -94,19 +98,23 @@ pub fn run(config_path: &Path) -> Result<()> {
     }
 
     // 5. Remove probe.toml
-    step(&format!("Removing config ({})", config_path.display()), || {
-        if config_path.exists() {
-            std::fs::remove_file(config_path).map_err(anyhow::Error::from)
-        } else {
-            Ok(())
-        }
-    });
+    step(
+        &format!("Removing config ({})", config_path.display()),
+        || {
+            if config_path.exists() {
+                std::fs::remove_file(config_path).map_err(anyhow::Error::from)
+            } else {
+                Ok(())
+            }
+        },
+    );
 
     // 6. Remove source directory
     if Path::new(&source_dir).exists() {
-        step(&format!("Removing source directory ({})", source_dir), || {
-            std::fs::remove_dir_all(&source_dir).map_err(anyhow::Error::from)
-        });
+        step(
+            &format!("Removing source directory ({})", source_dir),
+            || std::fs::remove_dir_all(&source_dir).map_err(anyhow::Error::from),
+        );
     }
 
     println!();
@@ -126,5 +134,9 @@ fn step(label: &str, f: impl FnOnce() -> Result<()>) {
 fn which_shredtop() -> Option<String> {
     let out = Command::new("which").arg("shredtop").output().ok()?;
     let path = std::str::from_utf8(&out.stdout).ok()?.trim().to_string();
-    if path.is_empty() { None } else { Some(path) }
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
 }

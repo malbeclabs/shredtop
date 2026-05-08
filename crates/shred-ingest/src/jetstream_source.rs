@@ -143,18 +143,15 @@ async fn run_jetstream(
     let mut grpc: tonic::client::Grpc<tonic::transport::Channel> =
         tonic::client::Grpc::new(channel);
 
-    let path = tonic::codegen::http::uri::PathAndQuery::from_static(
-        "/jetstream.Jetstream/Subscribe",
-    );
+    let path =
+        tonic::codegen::http::uri::PathAndQuery::from_static("/jetstream.Jetstream/Subscribe");
 
     grpc.ready()
         .await
         .map_err(|e| anyhow::anyhow!("jetstream: service not ready: {}", e))?;
 
-    let codec = tonic_prost::ProstCodec::<
-        JetstreamSubscribeRequest,
-        JetstreamSubscribeUpdate,
-    >::default();
+    let codec =
+        tonic_prost::ProstCodec::<JetstreamSubscribeRequest, JetstreamSubscribeUpdate>::default();
 
     // JetStream uses bidirectional streaming; send a single subscribe request.
     let mut req = tonic::Request::new(futures_util::stream::once(async {
@@ -165,10 +162,8 @@ async fn run_jetstream(
             req.metadata_mut().insert("x-token", val);
         }
     }
-    let mut stream: tonic::codec::Streaming<JetstreamSubscribeUpdate> = grpc
-        .streaming(req, path, codec)
-        .await?
-        .into_inner();
+    let mut stream: tonic::codec::Streaming<JetstreamSubscribeUpdate> =
+        grpc.streaming(req, path, codec).await?.into_inner();
 
     while let Some(msg) = stream.next().await {
         let msg = msg?;

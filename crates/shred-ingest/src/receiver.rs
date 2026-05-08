@@ -112,15 +112,25 @@ impl ShredReceiver {
             unsafe {
                 // SO_BUSY_POLL: spin for up to 50µs before blocking.
                 let val: libc::c_int = 50;
-                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_BUSY_POLL,
-                    &val as *const _ as _, size_of::<libc::c_int>() as _);
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_BUSY_POLL,
+                    &val as *const _ as _,
+                    size_of::<libc::c_int>() as _,
+                );
 
                 // SO_RCVBUFFORCE: bypasses net.core.rmem_max (requires root).
                 // Falls back to SO_RCVBUF with a warning if unprivileged.
                 const RECV_BUF: usize = 32 * 1024 * 1024;
                 let buf_val = RECV_BUF as libc::c_int;
-                let force_ok = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUFFORCE,
-                    &buf_val as *const _ as _, size_of::<libc::c_int>() as _) == 0;
+                let force_ok = libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUFFORCE,
+                    &buf_val as *const _ as _,
+                    size_of::<libc::c_int>() as _,
+                ) == 0;
                 if !force_ok {
                     socket.set_recv_buffer_size(RECV_BUF).ok();
                     if let Ok(actual) = socket.recv_buffer_size() {
@@ -128,7 +138,9 @@ impl ShredReceiver {
                             tracing::warn!(
                                 "recv buffer is {}KB (wanted {}KB); \
                                  run as root or: sysctl -w net.core.rmem_max={}",
-                                actual / 1024, RECV_BUF / 1024, RECV_BUF * 2
+                                actual / 1024,
+                                RECV_BUF / 1024,
+                                RECV_BUF * 2
                             );
                         }
                     }
@@ -137,8 +149,13 @@ impl ShredReceiver {
                 // SO_TIMESTAMPNS: kernel records the receive timestamp at NIC
                 // driver level, returned via SCM_TIMESTAMPNS cmsg on recvmsg/recvmmsg.
                 let one: libc::c_int = 1;
-                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_TIMESTAMPNS,
-                    &one as *const _ as _, size_of::<libc::c_int>() as _);
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_TIMESTAMPNS,
+                    &one as *const _ as _,
+                    size_of::<libc::c_int>() as _,
+                );
             }
         }
 
@@ -191,8 +208,13 @@ impl ShredReceiver {
             let fd = socket.as_raw_fd();
             unsafe {
                 let one: libc::c_int = 1;
-                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_REUSEPORT,
-                    &one as *const _ as _, size_of::<libc::c_int>() as _);
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_REUSEPORT,
+                    &one as *const _ as _,
+                    size_of::<libc::c_int>() as _,
+                );
             }
         }
 
@@ -207,20 +229,35 @@ impl ShredReceiver {
             let fd = socket.as_raw_fd();
             unsafe {
                 let val: libc::c_int = 50;
-                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_BUSY_POLL,
-                    &val as *const _ as _, size_of::<libc::c_int>() as _);
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_BUSY_POLL,
+                    &val as *const _ as _,
+                    size_of::<libc::c_int>() as _,
+                );
 
                 const RECV_BUF: usize = 32 * 1024 * 1024;
                 let buf_val = RECV_BUF as libc::c_int;
-                let force_ok = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUFFORCE,
-                    &buf_val as *const _ as _, size_of::<libc::c_int>() as _) == 0;
+                let force_ok = libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUFFORCE,
+                    &buf_val as *const _ as _,
+                    size_of::<libc::c_int>() as _,
+                ) == 0;
                 if !force_ok {
                     socket.set_recv_buffer_size(RECV_BUF).ok();
                 }
 
                 let one: libc::c_int = 1;
-                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_TIMESTAMPNS,
-                    &one as *const _ as _, size_of::<libc::c_int>() as _);
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_TIMESTAMPNS,
+                    &one as *const _ as _,
+                    size_of::<libc::c_int>() as _,
+                );
             }
         }
 
@@ -272,20 +309,35 @@ impl ShredReceiver {
             let fd = socket.as_raw_fd();
             unsafe {
                 let val: libc::c_int = 50;
-                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_BUSY_POLL,
-                    &val as *const _ as _, size_of::<libc::c_int>() as _);
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_BUSY_POLL,
+                    &val as *const _ as _,
+                    size_of::<libc::c_int>() as _,
+                );
 
                 const RECV_BUF: usize = 32 * 1024 * 1024;
                 let buf_val = RECV_BUF as libc::c_int;
-                let force_ok = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUFFORCE,
-                    &buf_val as *const _ as _, size_of::<libc::c_int>() as _) == 0;
+                let force_ok = libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_RCVBUFFORCE,
+                    &buf_val as *const _ as _,
+                    size_of::<libc::c_int>() as _,
+                ) == 0;
                 if !force_ok {
                     socket.set_recv_buffer_size(RECV_BUF).ok();
                 }
 
                 let one: libc::c_int = 1;
-                libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_TIMESTAMPNS,
-                    &one as *const _ as _, size_of::<libc::c_int>() as _);
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_TIMESTAMPNS,
+                    &one as *const _ as _,
+                    size_of::<libc::c_int>() as _,
+                );
             }
         }
 
@@ -333,7 +385,10 @@ impl ShredReceiver {
             (0..BATCH).map(|_| unsafe { std::mem::zeroed() }).collect();
         let mut iovs: Vec<libc::iovec> = pkts
             .iter_mut()
-            .map(|b| libc::iovec { iov_base: b.as_mut_ptr() as _, iov_len: PKT_CAP })
+            .map(|b| libc::iovec {
+                iov_base: b.as_mut_ptr() as _,
+                iov_len: PKT_CAP,
+            })
             .collect();
         let src_namelen = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
         let mut msgs: Vec<libc::mmsghdr> = (0..BATCH)
@@ -361,7 +416,13 @@ impl ShredReceiver {
             }
 
             let n = unsafe {
-                libc::recvmmsg(fd, msgs.as_mut_ptr(), BATCH as _, MSG_WAITFORONE, null_mut())
+                libc::recvmmsg(
+                    fd,
+                    msgs.as_mut_ptr(),
+                    BATCH as _,
+                    MSG_WAITFORONE,
+                    null_mut(),
+                )
             };
             if n <= 0 {
                 continue;
@@ -381,7 +442,9 @@ impl ShredReceiver {
                     && pkts[i][2] == 0x00
                     && pkts[i][3] == 0x01
                 {
-                    self.metrics.last_heartbeat_ns.store(metrics::now_ns(), Relaxed);
+                    self.metrics
+                        .last_heartbeat_ns
+                        .store(metrics::now_ns(), Relaxed);
                     continue;
                 }
 
@@ -396,10 +459,10 @@ impl ShredReceiver {
                 // Variant byte (offset 64) must be a known data or coding value.
                 // Unknown variants indicate garbage UDP payloads — drop before decoder.
                 let variant = pkts[i][64];
-                let is_data = variant == 0xa5
-                    || matches!(variant & 0xF0, 0x80 | 0x90 | 0xa0 | 0xb0);
-                let is_code = matches!(variant & 0xF0, 0x40 | 0x50 | 0x60 | 0x70)
-                    && variant != 0x5a;
+                let is_data =
+                    variant == 0xa5 || matches!(variant & 0xF0, 0x80 | 0x90 | 0xa0 | 0xb0);
+                let is_code =
+                    matches!(variant & 0xF0, 0x40 | 0x50 | 0x60 | 0x70) && variant != 0x5a;
                 if !is_data && !is_code {
                     self.metrics.shreds_invalid.fetch_add(1, Relaxed);
                     continue;
@@ -418,8 +481,7 @@ impl ShredReceiver {
                 // Prefer kernel SO_TIMESTAMPNS (CLOCK_REALTIME); fall back to
                 // userspace CLOCK_REALTIME. Both shred and RPC timestamps use
                 // CLOCK_REALTIME so lead time comparisons are on the same clock.
-                let ts = kernel_ts(&msgs[i].msg_hdr)
-                    .unwrap_or_else(metrics::now_realtime_ns);
+                let ts = kernel_ts(&msgs[i].msg_hdr).unwrap_or_else(metrics::now_realtime_ns);
 
                 // Source IP: sin_addr.s_addr is already big-endian (network byte order).
                 let src_ip = src_addrs[i].sin_addr.s_addr;
@@ -456,10 +518,14 @@ impl ShredReceiver {
                 self.metrics.shreds_received.fetch_add(1, Relaxed);
                 self.metrics.bytes_received.fetch_add(len as u64, Relaxed);
 
-                if self.tx.try_send(RawShred {
-                    data: pkts[i][..len].to_vec(),
-                    recv_timestamp_ns: ts,
-                }).is_err() {
+                if self
+                    .tx
+                    .try_send(RawShred {
+                        data: pkts[i][..len].to_vec(),
+                        recv_timestamp_ns: ts,
+                    })
+                    .is_err()
+                {
                     self.metrics.shreds_dropped.fetch_add(1, Relaxed);
                 }
             }
@@ -471,16 +537,17 @@ impl ShredReceiver {
     fn run_fallback(&mut self) -> Result<()> {
         let mut buf = vec![0u8; PKT_CAP];
         loop {
-            let buf_uninit: &mut [std::mem::MaybeUninit<u8>] = unsafe {
-                std::slice::from_raw_parts_mut(buf.as_mut_ptr() as _, buf.len())
-            };
+            let buf_uninit: &mut [std::mem::MaybeUninit<u8>] =
+                unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as _, buf.len()) };
             let (n, peer_addr) = self.socket.recv_from(buf_uninit)?;
             let src_ip: u32 = peer_addr
                 .as_socket_ipv4()
                 .map(|a| u32::from_be_bytes(a.ip().octets()))
                 .unwrap_or(0);
             let ts = metrics::now_ns();
-            if n == 0 { continue; }
+            if n == 0 {
+                continue;
+            }
 
             // DoubleZero heartbeat check.
             if n >= 4 && buf[0] == 0x44 && buf[1] == 0x5A && buf[2] == 0x00 && buf[3] == 0x01 {
@@ -504,7 +571,9 @@ impl ShredReceiver {
             if let Some(ver) = self.shred_version {
                 if n >= 79 {
                     let v = u16::from_le_bytes([buf[77], buf[78]]);
-                    if v != ver { continue; }
+                    if v != ver {
+                        continue;
+                    }
                 }
             }
 
@@ -537,10 +606,14 @@ impl ShredReceiver {
 
             self.metrics.shreds_received.fetch_add(1, Relaxed);
             self.metrics.bytes_received.fetch_add(n as u64, Relaxed);
-            if self.tx.try_send(RawShred {
-                data: buf[..n].to_vec(),
-                recv_timestamp_ns: ts,
-            }).is_err() {
+            if self
+                .tx
+                .try_send(RawShred {
+                    data: buf[..n].to_vec(),
+                    recv_timestamp_ns: ts,
+                })
+                .is_err()
+            {
                 self.metrics.shreds_dropped.fetch_add(1, Relaxed);
             }
         }
@@ -617,15 +690,11 @@ impl ShredReceiver {
                 eprintln!("{name}: heartbeat listener on {multicast_addr}:{port}");
                 let mut buf = [0u8; 64];
                 loop {
-                    let buf_uninit: &mut [std::mem::MaybeUninit<u8>] = unsafe {
-                        std::slice::from_raw_parts_mut(buf.as_mut_ptr() as _, buf.len())
-                    };
+                    let buf_uninit: &mut [std::mem::MaybeUninit<u8>] =
+                        unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as _, buf.len()) };
                     match socket.recv(buf_uninit) {
                         Ok(n) if n >= 4 => {
-                            if buf[0] == 0x44
-                                && buf[1] == 0x5A
-                                && buf[2] == 0x00
-                                && buf[3] == 0x01
+                            if buf[0] == 0x44 && buf[1] == 0x5A && buf[2] == 0x00 && buf[3] == 0x01
                             {
                                 metrics.last_heartbeat_ns.store(
                                     crate::metrics::now_ns(),
@@ -707,11 +776,7 @@ fn detect_heartbeat_port(interface: &str) -> Option<u16> {
         let name = interface.as_bytes();
         let n = name.len().min(libc::IFNAMSIZ - 1);
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                name.as_ptr(),
-                ifr.ifr_name.as_mut_ptr() as *mut u8,
-                n,
-            );
+            std::ptr::copy_nonoverlapping(name.as_ptr(), ifr.ifr_name.as_mut_ptr() as *mut u8, n);
             if libc::ioctl(sock, libc::SIOCGIFINDEX, &ifr) < 0 {
                 libc::close(sock);
                 return None;
@@ -739,7 +804,10 @@ fn detect_heartbeat_port(interface: &str) -> Option<u16> {
 
     // Recv timeout — slightly longer than probe window so the loop's
     // Instant check is the effective deadline.
-    let tv = libc::timeval { tv_sec: (PROBE_SECS + 1) as libc::time_t, tv_usec: 0 };
+    let tv = libc::timeval {
+        tv_sec: (PROBE_SECS + 1) as libc::time_t,
+        tv_usec: 0,
+    };
     unsafe {
         libc::setsockopt(
             sock,
@@ -789,7 +857,9 @@ fn detect_heartbeat_port(interface: &str) -> Option<u16> {
         }
     };
 
-    unsafe { libc::close(sock); }
+    unsafe {
+        libc::close(sock);
+    }
     result
 }
 
@@ -813,9 +883,8 @@ fn kernel_ts(hdr: &libc::msghdr) -> Option<u64> {
         let c = unsafe { &*cmsg };
         // SCM_TIMESTAMPNS == SO_TIMESTAMPNS == 35 on all Linux arches.
         if c.cmsg_level == libc::SOL_SOCKET && c.cmsg_type == libc::SO_TIMESTAMPNS {
-            let ts: libc::timespec = unsafe {
-                std::ptr::read_unaligned(libc::CMSG_DATA(cmsg) as *const libc::timespec)
-            };
+            let ts: libc::timespec =
+                unsafe { std::ptr::read_unaligned(libc::CMSG_DATA(cmsg) as *const libc::timespec) };
             return Some(ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64);
         }
         cmsg = unsafe { libc::CMSG_NXTHDR(hdr, cmsg) };

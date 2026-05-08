@@ -56,7 +56,11 @@ struct RaceReservoir {
 
 impl RaceReservoir {
     fn new() -> Self {
-        Self { buf: [0; RESERVOIR_CAP], len: 0, pos: 0 }
+        Self {
+            buf: [0; RESERVOIR_CAP],
+            len: 0,
+            pos: 0,
+        }
     }
 
     fn push(&mut self, v: i64) {
@@ -139,7 +143,9 @@ impl ShredPairMetrics {
         let (lead_p50_us, lead_p95_us, lead_p99_us) = {
             let res = self.reservoir.lock().unwrap();
             res.percentiles()
-                .map_or((None, None, None), |(p50, p95, p99)| (Some(p50), Some(p95), Some(p99)))
+                .map_or((None, None, None), |(p50, p95, p99)| {
+                    (Some(p50), Some(p95), Some(p99))
+                })
         };
 
         ShredPairSnapshot {
@@ -196,14 +202,21 @@ pub struct PublisherTracker {
 
 impl PublisherTracker {
     fn new(leader_cache: Option<Arc<LeaderCache>>) -> Arc<Self> {
-        Arc::new(Self { ips: DashMap::new(), leader_cache })
+        Arc::new(Self {
+            ips: DashMap::new(),
+            leader_cache,
+        })
     }
 
     fn record_arrival(&self, src_ip: u32, now_ns: u64) {
         if src_ip == 0 {
             return;
         }
-        let stats = self.ips.entry(src_ip).or_insert_with(|| IpStats::new(now_ns)).clone();
+        let stats = self
+            .ips
+            .entry(src_ip)
+            .or_insert_with(|| IpStats::new(now_ns))
+            .clone();
         stats.total.fetch_add(1, Relaxed);
         stats.last_seen_ns.store(now_ns, Relaxed);
     }
@@ -255,7 +268,11 @@ impl PublisherTracker {
                     src_ip: ip.to_string(),
                     total_shreds: total,
                     wins,
-                    win_pct: if total > 0 { wins as f64 / total as f64 * 100.0 } else { 0.0 },
+                    win_pct: if total > 0 {
+                        wins as f64 / total as f64 * 100.0
+                    } else {
+                        0.0
+                    },
                     last_seen_ns: e.value().last_seen_ns.load(Relaxed),
                 }
             })
@@ -334,7 +351,11 @@ impl ShredRaceTracker {
             })
             .expect("failed to spawn shred-race-evict");
 
-        Arc::new(Self { tx, pairs, publisher_tracker })
+        Arc::new(Self {
+            tx,
+            pairs,
+            publisher_tracker,
+        })
     }
 
     /// Get a channel sender for use in a `ShredReceiver`.
@@ -369,7 +390,8 @@ impl ShredRaceTracker {
         } else {
             (RPC, shred_source)
         };
-        let pair = self.pairs
+        let pair = self
+            .pairs
             .entry((key_a, key_b))
             .or_insert_with(|| ShredPairMetrics::new(key_a, key_b))
             .clone();
@@ -389,7 +411,13 @@ fn process_arrival(
     arrival: ShredArrival,
     expected: usize,
 ) {
-    let ShredArrival { source, slot, idx, recv_ns, src_ip } = arrival;
+    let ShredArrival {
+        source,
+        slot,
+        idx,
+        recv_ns,
+        src_ip,
+    } = arrival;
     let now = metrics::now_ns();
 
     // Record every arrival for per-IP totals (including retransmitters).
@@ -434,9 +462,11 @@ fn process_arrival(
                         let (loser_src, loser_ns, _) = sorted[j];
                         let lead_us = (loser_ns as i64 - winner_ns as i64) / 1000;
                         // Canonical key: alphabetically sorted so (a,b) == (b,a).
-                        let (key_a, key_b) =
-                            if winner_src <= loser_src { (winner_src, loser_src) }
-                            else { (loser_src, winner_src) };
+                        let (key_a, key_b) = if winner_src <= loser_src {
+                            (winner_src, loser_src)
+                        } else {
+                            (loser_src, winner_src)
+                        };
                         let pair = pairs
                             .entry((key_a, key_b))
                             .or_insert_with(|| ShredPairMetrics::new(key_a, key_b))

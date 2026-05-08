@@ -7,8 +7,10 @@
 use anyhow::Result;
 use chrono::Utc;
 use serde::Serialize;
-use shred_ingest::{DecodedTx, FanInSource, IpSnapshot, LeaderCache, ShredPairSnapshot, SourceMetricsSnapshot};
 use shred_ingest::source_metrics::SlotStats;
+use shred_ingest::{
+    DecodedTx, FanInSource, IpSnapshot, LeaderCache, ShredPairSnapshot, SourceMetricsSnapshot,
+};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -65,7 +67,9 @@ pub fn run(config: &ProbeConfig, duration_secs: u64, output: Option<PathBuf>) ->
 
     let mut fan_in = FanInSource::new();
     fan_in.filter_programs = config.filter_programs.clone();
-    fan_in.leader_cache = config.leader_filter.as_ref()
+    fan_in.leader_cache = config
+        .leader_filter
+        .as_ref()
         .filter(|lf| lf.enabled)
         .map(|lf| LeaderCache::new(&lf.rpc_url, lf.dz_rpc_url.as_deref()));
 
@@ -78,9 +82,7 @@ pub fn run(config: &ProbeConfig, duration_secs: u64, output: Option<PathBuf>) ->
     let (all_metrics, race_tracker, _handles) = fan_in.start(out_tx);
 
     // Drain thread
-    std::thread::spawn(move || {
-        for _ in out_rx {}
-    });
+    std::thread::spawn(move || for _ in out_rx {});
 
     let start = Instant::now();
     let target = Duration::from_secs(duration_secs);
@@ -125,7 +127,10 @@ pub fn run(config: &ProbeConfig, duration_secs: u64, output: Option<PathBuf>) ->
             for line in &report_lines {
                 eprintln!("{}", line);
             }
-            eprintln!("{}", color::dim(&format!("Report written to {}", path.display())));
+            eprintln!(
+                "{}",
+                color::dim(&format!("Report written to {}", path.display()))
+            );
         }
         None => {
             for line in &report_lines {
@@ -231,7 +236,9 @@ fn format_report(report: &BenchReport, header_title: &str, width: usize) -> Vec<
 
     // PUBLISHER IPs section
     if !report.publisher_ips.is_empty() {
-        lines.push(color::bold("PUBLISHER IPs  (source IP → shreds delivered):"));
+        lines.push(color::bold(
+            "PUBLISHER IPs  (source IP → shreds delivered):",
+        ));
         lines.push(String::new());
         lines.push(color::bold(&format!(
             "  {:<17}  {:>9}  {:>7}  {:>6}",

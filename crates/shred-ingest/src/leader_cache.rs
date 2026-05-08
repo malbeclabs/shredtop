@@ -82,7 +82,13 @@ impl LeaderCache {
                     match client.get_epoch_info() {
                         Ok(ei) => {
                             if ei.epoch != last_epoch {
-                                match refresh(&client, &dz_client, &cache_bg, ei.absolute_slot, ei.slot_index) {
+                                match refresh(
+                                    &client,
+                                    &dz_client,
+                                    &cache_bg,
+                                    ei.absolute_slot,
+                                    ei.slot_index,
+                                ) {
                                     Ok(()) => {
                                         last_epoch = ei.epoch;
                                         tracing::info!(
@@ -123,10 +129,13 @@ impl LeaderCache {
             None => return false,
         };
         // Try DZ overlay IP → client/gossip IP; fall back to direct IP.
-        let resolved = self.dz_ip_to_client_ip.get(&src_ip)
+        let resolved = self
+            .dz_ip_to_client_ip
+            .get(&src_ip)
             .map(|ip| *ip)
             .unwrap_or(src_ip);
-        self.gossip_ip_to_pubkey.get(&resolved)
+        self.gossip_ip_to_pubkey
+            .get(&resolved)
             .map(|pk| *pk == leader_pk)
             .unwrap_or(false)
     }
@@ -159,13 +168,17 @@ fn refresh(
     let mut pubkey_bytes_by_str: HashMap<String, [u8; 32]> = HashMap::with_capacity(nodes.len());
 
     for n in &nodes {
-        let Ok(pk) = Pubkey::from_str(&n.pubkey) else { continue };
+        let Ok(pk) = Pubkey::from_str(&n.pubkey) else {
+            continue;
+        };
         let pk_bytes = pk.to_bytes();
         pubkey_bytes_by_str.insert(n.pubkey.clone(), pk_bytes);
 
         // Use gossip IP as the canonical network identity for the validator.
         let Some(gossip) = n.gossip else { continue };
-        let IpAddr::V4(v4) = gossip.ip() else { continue };
+        let IpAddr::V4(v4) = gossip.ip() else {
+            continue;
+        };
         gossip_ip_to_pubkey.insert(u32::from_be_bytes(v4.octets()), pk_bytes);
     }
 
@@ -173,9 +186,13 @@ fn refresh(
     let epoch_start = absolute_slot - slot_index;
     cache.slot_to_pubkey.clear();
     for (pubkey_str, relative_slots) in &schedule {
-        let Some(&pk_bytes) = pubkey_bytes_by_str.get(pubkey_str) else { continue };
+        let Some(&pk_bytes) = pubkey_bytes_by_str.get(pubkey_str) else {
+            continue;
+        };
         for &rel in relative_slots {
-            cache.slot_to_pubkey.insert(epoch_start + rel as u64, pk_bytes);
+            cache
+                .slot_to_pubkey
+                .insert(epoch_start + rel as u64, pk_bytes);
         }
     }
 
@@ -200,9 +217,10 @@ fn refresh_dz_users(dz_client: &RpcClient, cache: &LeaderCache) -> anyhow::Resul
     let program_id = Pubkey::from_str(DZ_SERVICEABILITY_PROGRAM)?;
 
     let config = RpcProgramAccountsConfig {
-        filters: Some(vec![
-            RpcFilterType::Memcmp(Memcmp::new_raw_bytes(0, vec![DZ_USER_DISCRIMINATOR])),
-        ]),
+        filters: Some(vec![RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
+            0,
+            vec![DZ_USER_DISCRIMINATOR],
+        ))]),
         ..Default::default()
     };
 
