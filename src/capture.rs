@@ -29,6 +29,7 @@ pub trait CaptureWriter: Send {
         payload: &[u8],
     ) -> io::Result<()>;
 
+    #[allow(dead_code)]
     fn flush(&mut self) -> io::Result<()>;
 }
 
@@ -140,7 +141,7 @@ fn ns_pcap_header() -> PcapHeader {
 fn open_pcap_writer(path: &Path) -> io::Result<PcapWriter<BufWriter<File>>> {
     let file = File::create(path)?;
     PcapWriter::with_header(BufWriter::new(file), ns_pcap_header())
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))
+        .map_err(|e| io::Error::other(e.to_string()))
 }
 
 /// Build a minimal Ethernet + IPv4 + UDP frame wrapping the raw shred payload.
@@ -225,7 +226,7 @@ impl CaptureWriter for PcapCaptureWriter {
         if let Some(ref mut w) = self.writer {
             let pkt = PcapPacket::new(timestamp, frame_len as u32, &frame);
             w.write_packet(&pkt)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| io::Error::other(e.to_string()))?;
         }
         self.rotation.account(frame_len);
         Ok(())

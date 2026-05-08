@@ -79,6 +79,7 @@ const MSG_WAITFORONE: libc::c_int = 0x10000;
 
 impl ShredReceiver {
     /// Bind to the multicast group on the specified interface.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         multicast_addr: &str,
         port: u16,

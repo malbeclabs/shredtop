@@ -1,5 +1,7 @@
 .PHONY: help fmt fmt-check clippy check build release test ci clean
 
+export RUSTFLAGS := -D warnings
+
 help:
 	@awk 'BEGIN{FS=":.*##"; printf "Targets:\n"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 

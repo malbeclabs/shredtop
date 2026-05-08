@@ -20,7 +20,7 @@ pub fn run() -> Result<()> {
         }
     };
 
-    let line = match content.lines().filter(|l| !l.is_empty()).last() {
+    let line = match content.lines().filter(|l| !l.is_empty()).next_back() {
         Some(l) => l,
         None => {
             eprintln!("Metrics log is empty — service may just be starting.");
@@ -214,9 +214,7 @@ pub fn run() -> Result<()> {
     // Shred-level race section
     println!(
         "{}",
-        color::bold(&format!(
-            "SHRED RACE  validator \u{2192} this machine  (since start):"
-        ))
+        color::bold("SHRED RACE  validator \u{2192} this machine  (since start):")
     );
     let race_pairs = entry["shred_race"].as_array();
     let has_race = race_pairs.map(|p| !p.is_empty()).unwrap_or(false);
@@ -316,16 +314,4 @@ pub fn run() -> Result<()> {
     );
 
     Ok(())
-}
-
-fn format_num(n: u64) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out.chars().rev().collect()
 }

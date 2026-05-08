@@ -77,6 +77,12 @@ pub struct StageMetrics {
     pub count: AtomicU64,
 }
 
+impl Default for StageMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StageMetrics {
     pub const fn new() -> Self {
         Self {

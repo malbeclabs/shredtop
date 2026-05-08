@@ -151,7 +151,7 @@ pub fn run(pcap: &Path, feed_args: &[(Ipv4Addr, String)], min_matched: u64) -> R
     let mut lead_ns: HashMap<String, Vec<u64>> = HashMap::new();
     let mut pairs_matched: u64 = 0;
 
-    for (_, (first, second)) in &race {
+    for (first, second) in race.values() {
         let Some(second) = second else { continue };
         pairs_matched += 1;
 

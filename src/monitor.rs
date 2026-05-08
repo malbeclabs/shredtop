@@ -6,7 +6,6 @@
 
 use anyhow::Result;
 use chrono::{TimeZone, Utc};
-use libc;
 use shred_ingest::{
     GeyserTxSource, JitoShredstreamSource, RpcTxSource, ShredTxSource, SourceMetrics,
     TurbineTxSource, UnicastTxSource,
@@ -122,7 +121,7 @@ pub fn run(interval_secs: u64) -> Result<()> {
 
 fn read_last_entry(path: &str) -> Option<serde_json::Value> {
     let content = std::fs::read_to_string(path).ok()?;
-    let line = content.lines().filter(|l| !l.is_empty()).last()?;
+    let line = content.lines().filter(|l| !l.is_empty()).next_back()?;
     serde_json::from_str(line).ok()
 }
 
@@ -189,9 +188,9 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
     // -----------------------------------------------------------------------
     // SHRED RACE — primary signal, shown first
     // -----------------------------------------------------------------------
-    out.push(color::bold(&format!(
-        "SHRED RACE  validator \u{2192} this machine  (since start):"
-    )));
+    out.push(color::bold(
+        "SHRED RACE  validator \u{2192} this machine  (since start):",
+    ));
     out.push(String::new());
     let race_pairs = entry["shred_race"].as_array();
     let has_race = race_pairs.map(|p| !p.is_empty()).unwrap_or(false);
@@ -462,18 +461,6 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
         println!("{}", line);
     }
     count
-}
-
-fn format_num(n: u64) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out.chars().rev().collect()
 }
 
 // ---------------------------------------------------------------------------

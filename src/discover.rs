@@ -67,8 +67,8 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
 
             // Print table with [configured] marker
             println!(
-                "  {:<4} {:<22} {:<16} {:>4} {:>4}  {:<12}  {}",
-                "#", "CODE", "MULTICAST IP", "PUB", "SUB", "STATUS", ""
+                "  {:<4} {:<22} {:<16} {:>4} {:>4}  {:<12}",
+                "#", "CODE", "MULTICAST IP", "PUB", "SUB", "STATUS",
             );
             println!("  {}", "-".repeat(76));
             let subscribed_indices: Vec<usize> = groups
@@ -1105,7 +1105,7 @@ fn list_disks() -> Vec<DiskEntry> {
         };
 
         // Skip pseudo filesystems by type.
-        if pseudo.iter().any(|&p| p == fstype) {
+        if pseudo.contains(&fstype) {
             continue;
         }
         // Skip pseudo mount points.

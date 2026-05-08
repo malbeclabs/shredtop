@@ -239,11 +239,7 @@ impl SlotState {
     fn set_first_index(&mut self, idx: u32) {
         if self.next_contiguous == u32::MAX {
             self.next_contiguous = idx;
-            if idx > 0 {
-                self.boundary_scanned = false;
-            } else {
-                self.boundary_scanned = true;
-            }
+            self.boundary_scanned = idx == 0;
         }
     }
 

@@ -15,7 +15,9 @@
 
 use dashmap::DashMap;
 use solana_client::rpc_client::RpcClient;
-use solana_client::rpc_config::RpcProgramAccountsConfig;
+use solana_client::rpc_config::{
+    RpcAccountInfoConfig, RpcProgramAccountsConfig, UiAccountEncoding,
+};
 use solana_client::rpc_filter::{Memcmp, RpcFilterType};
 use solana_pubkey::Pubkey;
 use std::collections::HashMap;
@@ -221,16 +223,22 @@ fn refresh_dz_users(dz_client: &RpcClient, cache: &LeaderCache) -> anyhow::Resul
             0,
             vec![DZ_USER_DISCRIMINATOR],
         ))]),
+        account_config: RpcAccountInfoConfig {
+            encoding: Some(UiAccountEncoding::Base64),
+            ..Default::default()
+        },
         ..Default::default()
     };
 
-    let accounts = dz_client.get_program_accounts_with_config(&program_id, config)?;
+    let accounts = dz_client.get_program_ui_accounts_with_config(&program_id, config)?;
 
     cache.dz_ip_to_client_ip.clear();
     let mut count = 0usize;
 
     for (_, account) in accounts {
-        let data = &account.data;
+        let Some(data) = account.data.decode() else {
+            continue;
+        };
         if data.len() < DZ_DZ_IP_OFFSET + 4 {
             continue;
         }
