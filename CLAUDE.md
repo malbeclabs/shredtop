@@ -10,15 +10,6 @@ Standalone Solana shred feed latency benchmark. Measures the millisecond advanta
 
 ## Critical rules
 
-### Git identity
-Use `jared-dz` for all git operations unless the repo specifies a different user.
-
-Always verify git identity before committing:
-```bash
-git config user.name
-git config user.email
-```
-
 ### Commit style
 - Push directly to main — no PRs
 - No `Co-Authored-By` trailers in commit messages
