@@ -20,7 +20,7 @@ pub fn run() -> Result<()> {
         }
     };
 
-    let line = match content.lines().filter(|l| !l.is_empty()).next_back() {
+    let line = match content.lines().rfind(|l| !l.is_empty()) {
         Some(l) => l,
         None => {
             eprintln!("Metrics log is empty — service may just be starting.");

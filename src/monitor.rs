@@ -121,7 +121,7 @@ pub fn run(interval_secs: u64) -> Result<()> {
 
 fn read_last_entry(path: &str) -> Option<serde_json::Value> {
     let content = std::fs::read_to_string(path).ok()?;
-    let line = content.lines().filter(|l| !l.is_empty()).next_back()?;
+    let line = content.lines().rfind(|l| !l.is_empty())?;
     serde_json::from_str(line).ok()
 }
 

@@ -170,7 +170,7 @@ fn format_report(report: &BenchReport, header_title: &str, width: usize) -> Vec<
         lines.push(color::dim(&format!("  {}", "-".repeat(width - 2))));
 
         let mut pairs: Vec<&ShredPairSnapshot> = report.shred_race.iter().collect();
-        pairs.sort_by(|a, b| b.total_matched.cmp(&a.total_matched));
+        pairs.sort_by_key(|p| std::cmp::Reverse(p.total_matched));
 
         for p in &pairs {
             let a_pct = p.a_win_pct;
