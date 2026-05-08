@@ -560,7 +560,7 @@ fn collect_and_show_memberships() -> HashMap<String, String> {
                         current_iface = name.trim_end_matches(':').to_string();
                     }
                 } else if line.trim().starts_with("inet ") {
-                    let addr = line.trim().split_whitespace().nth(1).unwrap_or("");
+                    let addr = line.split_whitespace().nth(1).unwrap_or("");
                     let first_octet: u8 =
                         addr.split('.').next().unwrap_or("0").parse().unwrap_or(0);
                     if (224..=239).contains(&first_octet) {
