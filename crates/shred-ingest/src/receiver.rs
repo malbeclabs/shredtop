@@ -694,14 +694,17 @@ impl ShredReceiver {
                     let buf_uninit: &mut [std::mem::MaybeUninit<u8>] =
                         unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as _, buf.len()) };
                     match socket.recv(buf_uninit) {
-                        Ok(n) if n >= 4 => {
-                            if buf[0] == 0x44 && buf[1] == 0x5A && buf[2] == 0x00 && buf[3] == 0x01
-                            {
-                                metrics.last_heartbeat_ns.store(
-                                    crate::metrics::now_ns(),
-                                    std::sync::atomic::Ordering::Relaxed,
-                                );
-                            }
+                        Ok(n)
+                            if n >= 4
+                                && buf[0] == 0x44
+                                && buf[1] == 0x5A
+                                && buf[2] == 0x00
+                                && buf[3] == 0x01 =>
+                        {
+                            metrics.last_heartbeat_ns.store(
+                                crate::metrics::now_ns(),
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
                         }
                         _ => {}
                     }

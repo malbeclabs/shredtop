@@ -277,7 +277,7 @@ impl PublisherTracker {
                 }
             })
             .collect();
-        snaps.sort_by(|a, b| b.wins.cmp(&a.wins));
+        snaps.sort_by_key(|s| std::cmp::Reverse(s.wins));
         snaps
     }
 }
