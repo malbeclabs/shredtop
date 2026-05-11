@@ -84,7 +84,9 @@ fn shred_slot_index(bytes: &[u8]) -> Option<(u64, u32, u32)> {
     let slot = u64::from_le_bytes(bytes[SLOT_OFF..SLOT_OFF + 8].try_into().unwrap());
     let index = u32::from_le_bytes(bytes[INDEX_OFF..INDEX_OFF + 4].try_into().unwrap());
     let fec_set_index = u32::from_le_bytes(
-        bytes[FEC_SET_INDEX_OFF..FEC_SET_INDEX_OFF + 4].try_into().unwrap(),
+        bytes[FEC_SET_INDEX_OFF..FEC_SET_INDEX_OFF + 4]
+            .try_into()
+            .unwrap(),
     );
     Some((slot, index, fec_set_index))
 }
@@ -123,7 +125,11 @@ fn parse_coding_header(bytes: &[u8]) -> Option<CodingShredInfo> {
         return None;
     }
 
-    Some(CodingShredInfo { num_data, num_coding, position })
+    Some(CodingShredInfo {
+        num_data,
+        num_coding,
+        position,
+    })
 }
 
 /// Parse a data shred's entry payload.
@@ -135,8 +141,8 @@ fn parse_data_payload(bytes: &[u8]) -> Option<(bool, Vec<u8>)> {
     }
     let variant = bytes[VARIANT_OFF];
 
-    let is_data = variant == LEGACY_DATA_VARIANT
-        || matches!(variant & 0xF0, 0x80 | 0x90 | 0xa0 | 0xb0);
+    let is_data =
+        variant == LEGACY_DATA_VARIANT || matches!(variant & 0xF0, 0x80 | 0x90 | 0xa0 | 0xb0);
     if !is_data {
         return None;
     }
@@ -233,11 +239,7 @@ impl SlotState {
     fn set_first_index(&mut self, idx: u32) {
         if self.next_contiguous == u32::MAX {
             self.next_contiguous = idx;
-            if idx > 0 {
-                self.boundary_scanned = false;
-            } else {
-                self.boundary_scanned = true;
-            }
+            self.boundary_scanned = idx == 0;
         }
     }
 
@@ -344,8 +346,9 @@ impl FecSet {
         let mut shard_opts: Vec<Option<Vec<u8>>> =
             (0..total).map(|i| self.shards.get(&i).cloned()).collect();
 
-        let missing_data: Vec<usize> =
-            (0..self.num_data).filter(|i| !self.shards.contains_key(i)).collect();
+        let missing_data: Vec<usize> = (0..self.num_data)
+            .filter(|i| !self.shards.contains_key(i))
+            .collect();
 
         if missing_data.is_empty() {
             return Vec::new();
@@ -480,17 +483,15 @@ impl ShredDecoder {
                 }
 
                 let slot_fec = fec_sets.entry(slot).or_default();
-                let fec = slot_fec
-                    .entry(fec_set_index)
-                    .or_insert_with(|| {
-                        // Count expected data shreds per FEC set as we discover them.
-                        // This is the correct denominator for coverage on tail-only feeds
-                        // where the last-in-slot marker rarely arrives.
-                        self.metrics
-                            .coverage_shreds_expected
-                            .fetch_add(num_data as u64, Relaxed);
-                        FecSet::new(num_data, num_coding)
-                    });
+                let fec = slot_fec.entry(fec_set_index).or_insert_with(|| {
+                    // Count expected data shreds per FEC set as we discover them.
+                    // This is the correct denominator for coverage on tail-only feeds
+                    // where the last-in-slot marker rarely arrives.
+                    self.metrics
+                        .coverage_shreds_expected
+                        .fetch_add(num_data as u64, Relaxed);
+                    FecSet::new(num_data, num_coding)
+                });
 
                 if fec.num_data != num_data || fec.num_coding != num_coding {
                     continue;
@@ -517,13 +518,11 @@ impl ShredDecoder {
 
                         let mut recovered_count = 0u64;
                         for (data_shard_idx, shard_bytes) in recovered {
-                            let global_idx =
-                                fec_set_index.saturating_add(data_shard_idx as u32);
+                            let global_idx = fec_set_index.saturating_add(data_shard_idx as u32);
                             if slot_state.data_payloads.contains_key(&global_idx) {
                                 continue;
                             }
-                            if let Some((last_in_slot, payload)) =
-                                parse_data_payload(&shard_bytes)
+                            if let Some((last_in_slot, payload)) = parse_data_payload(&shard_bytes)
                             {
                                 slot_state.set_first_index(global_idx);
                                 if global_idx > slot_state.max_index {
@@ -937,12 +936,14 @@ mod tests {
 
         // Simulate a corrupted shred with a garbage slot value.
         let garbage_slot = u64::MAX;
-        if garbage_slot > highest_slot
-            && garbage_slot.saturating_sub(highest_slot) <= MAX_SLOT_JUMP
+        if garbage_slot > highest_slot && garbage_slot.saturating_sub(highest_slot) <= MAX_SLOT_JUMP
         {
             highest_slot = garbage_slot;
         }
-        assert_eq!(highest_slot, 100, "garbage slot must not poison highest_slot");
+        assert_eq!(
+            highest_slot, 100,
+            "garbage slot must not poison highest_slot"
+        );
 
         // Normal slot progression must still work after the bad shred.
         let next_slot = 102u64;

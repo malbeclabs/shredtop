@@ -10,9 +10,8 @@ static ENABLED: OnceLock<bool> = OnceLock::new();
 
 /// Returns `true` if ANSI color codes should be emitted.
 pub fn enabled() -> bool {
-    *ENABLED.get_or_init(|| {
-        std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
-    })
+    *ENABLED
+        .get_or_init(|| std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal())
 }
 
 fn wrap(code: &str, s: &str) -> String {
@@ -23,14 +22,30 @@ fn wrap(code: &str, s: &str) -> String {
     }
 }
 
-pub fn bold(s: &str) -> String       { wrap("1",    s) }
-pub fn dim(s: &str) -> String        { wrap("2",    s) }
-pub fn green(s: &str) -> String      { wrap("32",   s) }
-pub fn yellow(s: &str) -> String     { wrap("33",   s) }
-pub fn red(s: &str) -> String        { wrap("31",   s) }
-pub fn cyan(s: &str) -> String       { wrap("36",   s) }
-pub fn bold_cyan(s: &str) -> String  { wrap("1;36", s) }
-pub fn bold_green(s: &str) -> String { wrap("1;32", s) }
+pub fn bold(s: &str) -> String {
+    wrap("1", s)
+}
+pub fn dim(s: &str) -> String {
+    wrap("2", s)
+}
+pub fn green(s: &str) -> String {
+    wrap("32", s)
+}
+pub fn yellow(s: &str) -> String {
+    wrap("33", s)
+}
+pub fn red(s: &str) -> String {
+    wrap("31", s)
+}
+pub fn cyan(s: &str) -> String {
+    wrap("36", s)
+}
+pub fn bold_cyan(s: &str) -> String {
+    wrap("1;36", s)
+}
+pub fn bold_green(s: &str) -> String {
+    wrap("1;32", s)
+}
 
 /// Count visible characters in a string, ignoring ANSI escape sequences.
 pub fn visible_len(s: &str) -> usize {

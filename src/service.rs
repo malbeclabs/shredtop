@@ -55,10 +55,17 @@ WantedBy=multi-user.target
     std::fs::write(UNIT_PATH, unit)?;
 
     let _ = Command::new("systemctl").arg("daemon-reload").status();
-    let _ = Command::new("systemctl").args(["enable", "shredtop"]).status();
-    let _ = Command::new("systemctl").args(["start", "shredtop"]).status();
+    let _ = Command::new("systemctl")
+        .args(["enable", "shredtop"])
+        .status();
+    let _ = Command::new("systemctl")
+        .args(["start", "shredtop"])
+        .status();
 
-    println!("{}", color::bold_green("✓ Service installed, enabled, and started."));
+    println!(
+        "{}",
+        color::bold_green("✓ Service installed, enabled, and started.")
+    );
     println!();
     println!("  shredtop monitor  — open live dashboard");
     println!("  shredtop status   — view latest metrics");
@@ -67,7 +74,9 @@ WantedBy=multi-user.target
 }
 
 pub fn uninstall() -> Result<()> {
-    let _ = Command::new("systemctl").args(["stop", "shredtop"]).status();
+    let _ = Command::new("systemctl")
+        .args(["stop", "shredtop"])
+        .status();
     let _ = Command::new("systemctl")
         .args(["disable", "shredtop"])
         .status();

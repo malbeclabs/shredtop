@@ -113,9 +113,7 @@ async fn run_geyser(
     let token = x_token.clone();
     let mut client = GeyserClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
         if let Some(ref t) = token {
-            if let Ok(val) =
-                t.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-            {
+            if let Ok(val) = t.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
                 req.metadata_mut().insert("x-token", val);
             }
         }

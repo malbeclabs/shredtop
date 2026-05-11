@@ -6,8 +6,7 @@ use std::process::Command;
 
 use crate::color;
 
-const RELEASES_API: &str =
-    "https://api.github.com/repos/malbeclabs/shredtop/releases/latest";
+const RELEASES_API: &str = "https://api.github.com/repos/malbeclabs/shredtop/releases/latest";
 const DOWNLOAD_URL: &str =
     "https://github.com/malbeclabs/shredtop/releases/download/{tag}/shredtop";
 
@@ -58,7 +57,10 @@ pub fn run() -> Result<()> {
     // Atomic rename — works even while the old binary is running
     std::fs::rename(&tmp, &dest)?;
 
-    println!("{}", color::bold_green(&format!("✓ Done. {} installed to {}.", tag, dest.display())));
+    println!(
+        "{}",
+        color::bold_green(&format!("✓ Done. {} installed to {}.", tag, dest.display()))
+    );
     Ok(())
 }
 
@@ -90,7 +92,11 @@ pub fn run_from_source() -> Result<()> {
     } else {
         println!("Cloning to {}...", repo_str);
         let ok = Command::new("git")
-            .args(["clone", "https://github.com/malbeclabs/shredtop.git", repo_str])
+            .args([
+                "clone",
+                "https://github.com/malbeclabs/shredtop.git",
+                repo_str,
+            ])
             .status()?
             .success();
         anyhow::ensure!(ok, "git clone failed");
@@ -120,7 +126,13 @@ pub fn run_from_source() -> Result<()> {
 
     std::fs::rename(&tmp, &dest)?;
 
-    println!("{}", color::bold_green(&format!("✓ Done. Built from source (main) installed to {}.", dest.display())));
+    println!(
+        "{}",
+        color::bold_green(&format!(
+            "✓ Done. Built from source (main) installed to {}.",
+            dest.display()
+        ))
+    );
     Ok(())
 }
 
@@ -128,7 +140,10 @@ pub fn run_from_source() -> Result<()> {
 fn which_shredtop() -> Result<std::path::PathBuf> {
     let out = Command::new("which").arg("shredtop").output()?;
     let path = std::str::from_utf8(&out.stdout)?.trim().to_string();
-    anyhow::ensure!(!path.is_empty(), "could not locate installed shredtop binary");
+    anyhow::ensure!(
+        !path.is_empty(),
+        "could not locate installed shredtop binary"
+    );
     Ok(std::path::PathBuf::from(path))
 }
 
@@ -140,7 +155,14 @@ fn fetch_latest_release() -> Result<String, String> {
 
 fn fetch_via_api() -> Result<String, String> {
     let output = Command::new("curl")
-        .args(["-sf", "--max-time", "10", "-H", "User-Agent: shredtop", RELEASES_API])
+        .args([
+            "-sf",
+            "--max-time",
+            "10",
+            "-H",
+            "User-Agent: shredtop",
+            RELEASES_API,
+        ])
         .output()
         .map_err(|_| "curl not found".to_string())?;
 
@@ -186,7 +208,11 @@ fn fetch_via_git_ls_remote() -> Result<String, String> {
         if line.ends_with("^{}") {
             continue;
         }
-        if let Some(tag) = line.split('\t').nth(1).and_then(|r| r.strip_prefix("refs/tags/")) {
+        if let Some(tag) = line
+            .split('\t')
+            .nth(1)
+            .and_then(|r| r.strip_prefix("refs/tags/"))
+        {
             return Ok(tag.to_string());
         }
     }

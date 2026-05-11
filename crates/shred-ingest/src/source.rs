@@ -30,7 +30,12 @@ pub fn start_source(
     metrics: Arc<SourceMetrics>,
 ) -> Result<std::thread::JoinHandle<()>> {
     match config {
-        SourceConfig::Shred { multicast_addr, port, interface, shred_version } => {
+        SourceConfig::Shred {
+            multicast_addr,
+            port,
+            interface,
+            shred_version,
+        } => {
             let (shred_tx, shred_rx) = crossbeam_channel::bounded(4096);
 
             let recv_metrics = metrics.clone();

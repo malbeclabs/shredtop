@@ -14,9 +14,9 @@ use tracing_subscriber::EnvFilter;
 mod analyze;
 mod bench;
 mod capture;
-mod color;
 mod capture_status;
 mod cli;
+mod color;
 mod config;
 mod discover;
 mod metrics_server;
@@ -38,7 +38,14 @@ fn main() -> Result<()> {
 
     // Load config (except for commands that don't need it)
     let config = match &cli.command {
-        Commands::Init | Commands::Upgrade { .. } | Commands::Status | Commands::Service { .. } | Commands::Monitor { .. } | Commands::Capture { .. } | Commands::Analyze { .. } | Commands::Uninstall => None,
+        Commands::Init
+        | Commands::Upgrade { .. }
+        | Commands::Status
+        | Commands::Service { .. }
+        | Commands::Monitor { .. }
+        | Commands::Capture { .. }
+        | Commands::Analyze { .. }
+        | Commands::Uninstall => None,
         _ => {
             if !cli.config.exists() {
                 std::fs::write(&cli.config, b"")?;
@@ -90,7 +97,11 @@ fn main() -> Result<()> {
         Commands::Capture { action } => match action {
             CaptureAction::List => capture_status::run(&cli.config)?,
         },
-        Commands::Analyze { pcap, feed, min_matched } => {
+        Commands::Analyze {
+            pcap,
+            feed,
+            min_matched,
+        } => {
             analyze::run(&pcap, &feed, min_matched)?;
         }
         Commands::Uninstall => {

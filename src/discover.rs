@@ -19,21 +19,30 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
     // -----------------------------------------------------------------------
     // Configured sources
     // -----------------------------------------------------------------------
-    println!("{}", color::bold_cyan("=== Configured sources (probe.toml) ==="));
+    println!(
+        "{}",
+        color::bold_cyan("=== Configured sources (probe.toml) ===")
+    );
     show_configured_sources(config);
 
     // -----------------------------------------------------------------------
     // Active multicast memberships (ip maddr show)
     // -----------------------------------------------------------------------
     println!();
-    println!("{}", color::bold_cyan("=== Active multicast memberships ==="));
+    println!(
+        "{}",
+        color::bold_cyan("=== Active multicast memberships ===")
+    );
     let memberships = collect_and_show_memberships();
 
     // -----------------------------------------------------------------------
     // DoubleZero group selection
     // -----------------------------------------------------------------------
     println!();
-    println!("{}", color::bold_cyan("=== DoubleZero multicast groups ==="));
+    println!(
+        "{}",
+        color::bold_cyan("=== DoubleZero multicast groups ===")
+    );
     let mut dz_sources: Vec<SourceEntry> = Vec::new();
 
     match fetch_dz_groups() {
@@ -58,8 +67,8 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
 
             // Print table with [configured] marker
             println!(
-                "  {:<4} {:<22} {:<16} {:>4} {:>4}  {:<12}  {}",
-                "#", "CODE", "MULTICAST IP", "PUB", "SUB", "STATUS", ""
+                "  {:<4} {:<22} {:<16} {:>4} {:>4}  {:<12}",
+                "#", "CODE", "MULTICAST IP", "PUB", "SUB", "STATUS",
             );
             println!("  {}", "-".repeat(76));
             let subscribed_indices: Vec<usize> = groups
@@ -130,8 +139,8 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
                 // Sniff ports from live traffic for all selected groups.
                 // DoubleZero groups never appear in kernel IGMP memberships, so we
                 // fall back to the detected doublezero interface for those.
-                let dz_iface = detect_doublezero_iface()
-                    .unwrap_or_else(|| "doublezero1".to_string());
+                let dz_iface =
+                    detect_doublezero_iface().unwrap_or_else(|| "doublezero1".to_string());
                 let needs_sniff: Vec<(String, String)> = selected_indices
                     .iter()
                     .map(|&i| {
@@ -180,14 +189,9 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
                         Some(p)
                     } else {
                         // Unknown group with no traffic — ask the user
-                        println!(
-                            "  {} — could not detect port (no traffic in 3s).",
-                            g.code
-                        );
-                        let port_str = prompt_required(
-                            &format!("  Port for {}", g.code),
-                            "e.g. 7733",
-                        );
+                        println!("  {} — could not detect port (no traffic in 3s).", g.code);
+                        let port_str =
+                            prompt_required(&format!("  Port for {}", g.code), "e.g. 7733");
                         port_str.parse::<u16>().ok()
                     };
 
@@ -202,7 +206,7 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
                         pin_recv_core: None,
                         pin_decode_core: None,
                         shred_version: None,
-                    heartbeat_port: None,
+                        heartbeat_port: None,
                     });
                 }
 
@@ -227,9 +231,7 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
                 "  {} — {} port {} on {}",
                 s.name,
                 s.multicast_addr.as_deref().unwrap_or("?"),
-                s.port
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| "?".into()),
+                s.port.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
                 s.interface.as_deref().unwrap_or("?"),
             );
         }
@@ -266,7 +268,10 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
 
     if !has_baseline_already {
         println!();
-        println!("{}", color::bold_cyan("=== No baseline source configured ==="));
+        println!(
+            "{}",
+            color::bold_cyan("=== No baseline source configured ===")
+        );
         println!("A baseline (rpc/geyser) enables BEAT%/LEAD metrics — comparison of shred feeds");
         println!("vs block confirmation. Without one, SHRED RACE (inter-feed comparison) is still");
         println!("fully active.");
@@ -373,7 +378,10 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
         if let Some(ref cap) = cfg.capture {
             for (i, fmt) in cap.formats.iter().enumerate() {
                 let max_mb = cap.max_size_mb.get(i).copied().unwrap_or(10_000);
-                println!("  Capture ({}): {} → {}  (≤{} MB)", fmt, fmt, cap.output_dir, max_mb);
+                println!(
+                    "  Capture ({}): {} → {}  (≤{} MB)",
+                    fmt, fmt, cap.output_dir, max_mb
+                );
             }
             println!("  Recording starts when the service starts (not yet).");
         } else {
@@ -390,10 +398,18 @@ pub fn run(config: &ProbeConfig, config_path: &Path) -> Result<()> {
             .unwrap_or(false);
         if svc_restarted {
             println!();
-            println!("  {}", color::bold_green("✓ Service restarted. Run `shredtop monitor` to watch live metrics."));
+            println!(
+                "  {}",
+                color::bold_green(
+                    "✓ Service restarted. Run `shredtop monitor` to watch live metrics."
+                )
+            );
         } else {
             println!();
-            println!("  {}", color::yellow("⚠ Service not running. Start it with: shredtop service start"));
+            println!(
+                "  {}",
+                color::yellow("⚠ Service not running. Start it with: shredtop service start")
+            );
         }
     } else {
         println!();
@@ -445,14 +461,20 @@ fn detect_doublezero_iface() -> Option<String> {
                 continue;
             }
             let name_part = line.split_whitespace().nth(1)?;
-            let name = name_part.trim_end_matches(':').split('@').next()?.to_string();
+            let name = name_part
+                .trim_end_matches(':')
+                .split('@')
+                .next()?
+                .to_string();
             if !name.starts_with("doublezero") {
                 continue;
             }
             // Check the flags field (between < and >) for the UP flag.
             let flags_start = line.find('<').unwrap_or(line.len());
-            let flags_end =
-                line[flags_start..].find('>').map(|i| flags_start + i).unwrap_or(line.len());
+            let flags_end = line[flags_start..]
+                .find('>')
+                .map(|i| flags_start + i)
+                .unwrap_or(line.len());
             let is_up = line[flags_start..flags_end]
                 .split([',', '<'])
                 .any(|f| f == "UP");
@@ -538,7 +560,7 @@ fn collect_and_show_memberships() -> HashMap<String, String> {
                         current_iface = name.trim_end_matches(':').to_string();
                     }
                 } else if line.trim().starts_with("inet ") {
-                    let addr = line.trim().split_whitespace().nth(1).unwrap_or("");
+                    let addr = line.split_whitespace().nth(1).unwrap_or("");
                     let first_octet: u8 =
                         addr.split('.').next().unwrap_or("0").parse().unwrap_or(0);
                     if (224..=239).contains(&first_octet) {
@@ -747,11 +769,17 @@ fn show_udp_sockets(ports: &[u16]) {
             // Only show this section when there IS a conflict — a receiver
             // already bound to the port. If nothing is running, skip silently.
             if !found_lines.is_empty() {
-                println!("{}", color::bold_cyan("=== Active UDP sockets on shred ports ==="));
+                println!(
+                    "{}",
+                    color::bold_cyan("=== Active UDP sockets on shred ports ===")
+                );
                 for line in &found_lines {
                     println!("{}", color::yellow(line));
                 }
-                println!("{}", color::yellow("  ⚠ Another process is already listening on these ports."));
+                println!(
+                    "{}",
+                    color::yellow("  ⚠ Another process is already listening on these ports.")
+                );
             }
         }
     }
@@ -897,8 +925,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
             }
             "4" | "geyser" => {
                 let name = prompt_required("  Name", "e.g. helius");
-                let url =
-                    prompt_required("  URL", "e.g. https://mainnet.helius-rpc.com:443");
+                let url = prompt_required("  URL", "e.g. https://mainnet.helius-rpc.com:443");
                 let x_token = prompt_optional("  x-token", "auth token — press Enter to skip");
                 SourceEntry {
                     name,
@@ -916,8 +943,7 @@ fn collect_manual_sources() -> Vec<SourceEntry> {
             }
             "5" | "jito-grpc" => {
                 let name = prompt_with_default("  Name", "jito-grpc", "display name");
-                let url =
-                    prompt_with_default("  URL", "http://127.0.0.1:9999", "proxy address");
+                let url = prompt_with_default("  URL", "http://127.0.0.1:9999", "proxy address");
                 SourceEntry {
                     name,
                     source_type: "jito-grpc".into(),
@@ -978,7 +1004,10 @@ fn prompt_required(label: &str, hint: &str) -> String {
 
 /// Prompt for a field with a default value shown in brackets.
 fn prompt_with_default(label: &str, default: &str, hint: &str) -> String {
-    print!("{}", color::yellow(&format!("{} [{}] ({}): ", label, default, hint)));
+    print!(
+        "{}",
+        color::yellow(&format!("{} [{}] ({}): ", label, default, hint))
+    );
     io::stdout().flush().ok();
     let mut input = String::new();
     io::stdin().read_line(&mut input).ok();
@@ -1035,10 +1064,28 @@ fn list_disks() -> Vec<DiskEntry> {
 
     let text = String::from_utf8_lossy(&output);
     let pseudo = [
-        "tmpfs", "devtmpfs", "devpts", "sysfs", "proc", "cgroup", "cgroup2",
-        "overlay", "squashfs", "udev", "hugetlbfs", "mqueue", "nsfs",
-        "securityfs", "fusectl", "tracefs", "debugfs", "configfs", "bpf",
-        "efivarfs", "autofs", "pstore",
+        "tmpfs",
+        "devtmpfs",
+        "devpts",
+        "sysfs",
+        "proc",
+        "cgroup",
+        "cgroup2",
+        "overlay",
+        "squashfs",
+        "udev",
+        "hugetlbfs",
+        "mqueue",
+        "nsfs",
+        "securityfs",
+        "fusectl",
+        "tracefs",
+        "debugfs",
+        "configfs",
+        "bpf",
+        "efivarfs",
+        "autofs",
+        "pstore",
     ];
 
     let mut entries = Vec::new();
@@ -1058,7 +1105,7 @@ fn list_disks() -> Vec<DiskEntry> {
         };
 
         // Skip pseudo filesystems by type.
-        if pseudo.iter().any(|&p| p == fstype) {
+        if pseudo.contains(&fstype) {
             continue;
         }
         // Skip pseudo mount points.
@@ -1103,7 +1150,11 @@ fn parse_size_mb(s: &str) -> Option<u64> {
         "M" | "" => n as u64,
         _ => return None,
     };
-    if mb == 0 { None } else { Some(mb) }
+    if mb == 0 {
+        None
+    } else {
+        Some(mb)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,7 +1166,10 @@ fn parse_size_mb(s: &str) -> Option<u64> {
 /// Returns `None` if the user skips capture.
 fn configure_capture() -> Option<CaptureConfig> {
     println!();
-    println!("{}", color::bold_cyan("=== Raw shred capture (optional) ==="));
+    println!(
+        "{}",
+        color::bold_cyan("=== Raw shred capture (optional) ===")
+    );
     println!("  Stores raw packets to disk for offline analysis and replay.");
     println!();
     println!("  1) pcap   — Wireshark-compatible, industry standard");
@@ -1132,11 +1186,25 @@ fn configure_capture() -> Option<CaptureConfig> {
     let mut formats: Vec<String> = Vec::new();
     for token in choice.split(',').map(str::trim) {
         match token {
-            "1" => { if !formats.contains(&"pcap".to_string())  { formats.push("pcap".into());  } }
-            "2" => { if !formats.contains(&"csv".to_string())   { formats.push("csv".into());   } }
-            "3" => { if !formats.contains(&"jsonl".to_string()) { formats.push("jsonl".into()); } }
+            "1" => {
+                if !formats.contains(&"pcap".to_string()) {
+                    formats.push("pcap".into());
+                }
+            }
+            "2" => {
+                if !formats.contains(&"csv".to_string()) {
+                    formats.push("csv".into());
+                }
+            }
+            "3" => {
+                if !formats.contains(&"jsonl".to_string()) {
+                    formats.push("jsonl".into());
+                }
+            }
             "4" | "" => {}
-            other => { println!("  Ignoring unrecognised token {:?}.", other); }
+            other => {
+                println!("  Ignoring unrecognised token {:?}.", other);
+            }
         }
     }
 
@@ -1147,17 +1215,33 @@ fn configure_capture() -> Option<CaptureConfig> {
 
     // ── Step 2: choose a disk ────────────────────────────────────────────────
     println!();
-    println!("{}", color::bold_cyan("=== Choose a disk for capture files ==="));
+    println!(
+        "{}",
+        color::bold_cyan("=== Choose a disk for capture files ===")
+    );
     println!();
 
     let disks = list_disks();
     if disks.is_empty() {
         println!("  (could not detect disks — enter path manually)");
     } else {
-        println!("  {}", color::bold(&format!("{:<4}  {:<30}  {:>6}  {:>6}  {}", "#", "MOUNT POINT", "SIZE", "AVAIL", "USE%")));
+        println!(
+            "  {}",
+            color::bold(&format!(
+                "{:<4}  {:<30}  {:>6}  {:>6}  {}",
+                "#", "MOUNT POINT", "SIZE", "AVAIL", "USE%"
+            ))
+        );
         println!("  {}", color::dim(&"-".repeat(60)));
         for (i, d) in disks.iter().enumerate() {
-            println!("  {:<4}  {:<30}  {:>6}  {:>6}  {}", i + 1, d.mount, d.size, d.avail, d.use_pct);
+            println!(
+                "  {:<4}  {:<30}  {:>6}  {:>6}  {}",
+                i + 1,
+                d.mount,
+                d.size,
+                d.avail,
+                d.use_pct
+            );
         }
         println!();
     }
@@ -1165,7 +1249,10 @@ fn configure_capture() -> Option<CaptureConfig> {
     let output_dir = if disks.is_empty() {
         prompt_with_default("Output directory", "/var/log/shredtop-capture", "full path")
     } else {
-        print!("{}", color::yellow(&format!("Disk [1-{}, or enter path]: ", disks.len())));
+        print!(
+            "{}",
+            color::yellow(&format!("Disk [1-{}, or enter path]: ", disks.len()))
+        );
         io::stdout().flush().ok();
         let mut sel = String::new();
         io::stdin().read_line(&mut sel).ok();
@@ -1197,16 +1284,19 @@ fn configure_capture() -> Option<CaptureConfig> {
 
     for fmt in &formats {
         let (default_size, approx_time) = match fmt.as_str() {
-            "pcap"  => ("50G",  "~2.5hrs of recording"),
-            "csv"   => ("5G",   "~2.5hrs of recording"),
-            "jsonl" => ("10G",  "~2.5hrs of recording"),
-            _       => ("10G",  "~2.5hrs of recording"),
+            "pcap" => ("50G", "~2.5hrs of recording"),
+            "csv" => ("5G", "~2.5hrs of recording"),
+            "jsonl" => ("10G", "~2.5hrs of recording"),
+            _ => ("10G", "~2.5hrs of recording"),
         };
         loop {
-            print!("{}", color::yellow(&format!(
-                "  Set max size for {} collection [suggested {} for {}]: ",
-                fmt, default_size, approx_time
-            )));
+            print!(
+                "{}",
+                color::yellow(&format!(
+                    "  Set max size for {} collection [suggested {} for {}]: ",
+                    fmt, default_size, approx_time
+                ))
+            );
             io::stdout().flush().ok();
             let mut s = String::new();
             io::stdin().read_line(&mut s).ok();
@@ -1226,7 +1316,10 @@ fn configure_capture() -> Option<CaptureConfig> {
     println!();
     for (fmt, &max_mb) in formats.iter().zip(max_size_mb.iter()) {
         let ring = (max_mb / rotate_mb).max(2);
-        println!("  {} → {}  (≤{} MB, {} × {} MB files)", fmt, output_dir, max_mb, ring, rotate_mb);
+        println!(
+            "  {} → {}  (≤{} MB, {} × {} MB files)",
+            fmt, output_dir, max_mb, ring, rotate_mb
+        );
     }
 
     Some(CaptureConfig {

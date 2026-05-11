@@ -45,14 +45,22 @@ pub fn now_ns() -> u64 {
 pub fn now_realtime_ns() -> u64 {
     #[cfg(target_os = "linux")]
     {
-        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-        unsafe { libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts); }
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe {
+            libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
+        }
         (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
     }
     #[cfg(not(target_os = "linux"))]
     {
         use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
     }
 }
 
@@ -67,6 +75,12 @@ pub struct StageMetrics {
     pub execute_ns: AtomicU64,
     pub total_ns: AtomicU64,
     pub count: AtomicU64,
+}
+
+impl Default for StageMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StageMetrics {

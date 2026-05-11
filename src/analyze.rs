@@ -59,8 +59,10 @@ pub fn run(pcap: &Path, feed_args: &[(Ipv4Addr, String)], min_matched: u64) -> R
     let mut reader = PcapReader::new(file)?;
 
     // Build IP-octets → feed-name lookup.
-    let feed_map: HashMap<[u8; 4], &str> =
-        feed_args.iter().map(|(ip, name)| (ip.octets(), name.as_str())).collect();
+    let feed_map: HashMap<[u8; 4], &str> = feed_args
+        .iter()
+        .map(|(ip, name)| (ip.octets(), name.as_str()))
+        .collect();
 
     let mut race: RaceMap = HashMap::new();
     let mut packets_read: u64 = 0;
@@ -122,13 +124,22 @@ pub fn run(pcap: &Path, feed_args: &[(Ipv4Addr, String)], min_matched: u64) -> R
 
         match race.entry(key) {
             std::collections::hash_map::Entry::Vacant(e) => {
-                e.insert((ShredEvent { feed, timestamp_ns: ts_ns }, None));
+                e.insert((
+                    ShredEvent {
+                        feed,
+                        timestamp_ns: ts_ns,
+                    },
+                    None,
+                ));
             }
             std::collections::hash_map::Entry::Occupied(mut e) => {
                 let val = e.get_mut();
                 // Only record the second distinct-feed arrival; ignore 3rd+.
                 if val.1.is_none() && val.0.feed != feed {
-                    val.1 = Some(ShredEvent { feed, timestamp_ns: ts_ns });
+                    val.1 = Some(ShredEvent {
+                        feed,
+                        timestamp_ns: ts_ns,
+                    });
                 }
             }
         }
@@ -140,7 +151,7 @@ pub fn run(pcap: &Path, feed_args: &[(Ipv4Addr, String)], min_matched: u64) -> R
     let mut lead_ns: HashMap<String, Vec<u64>> = HashMap::new();
     let mut pairs_matched: u64 = 0;
 
-    for (_, (first, second)) in &race {
+    for (first, second) in race.values() {
         let Some(second) = second else { continue };
         pairs_matched += 1;
 
@@ -173,10 +184,17 @@ pub fn run(pcap: &Path, feed_args: &[(Ipv4Addr, String)], min_matched: u64) -> R
     for feed in &comp_feeds {
         let (data, coding) = composition[feed];
         let total = data + coding;
-        let cod_pct = if total > 0 { 100.0 * coding as f64 / total as f64 } else { 0.0 };
+        let cod_pct = if total > 0 {
+            100.0 * coding as f64 / total as f64
+        } else {
+            0.0
+        };
         println!(
             "  {:<24}  {:>12}  {:>12}  {:>7.1}%",
-            feed, fmt_num(data), fmt_num(coding), cod_pct,
+            feed,
+            fmt_num(data),
+            fmt_num(coding),
+            cod_pct,
         );
     }
     println!();
@@ -228,7 +246,10 @@ pub fn run(pcap: &Path, feed_args: &[(Ipv4Addr, String)], min_matched: u64) -> R
         }
 
         if feed_wins == 0 {
-            warn!("feed '{}': no first-arrivals — check --feed IP mapping", feed);
+            warn!(
+                "feed '{}': no first-arrivals — check --feed IP mapping",
+                feed
+            );
         }
     }
 

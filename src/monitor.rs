@@ -6,9 +6,11 @@
 
 use anyhow::Result;
 use chrono::{TimeZone, Utc};
-use libc;
-use shred_ingest::{GeyserTxSource, JitoShredstreamSource, RpcTxSource, ShredTxSource, TurbineTxSource, UnicastTxSource, SourceMetrics};
-use shred_ingest::{ThorTxSource, JetstreamTxSource};
+use shred_ingest::{
+    GeyserTxSource, JitoShredstreamSource, RpcTxSource, ShredTxSource, SourceMetrics,
+    TurbineTxSource, UnicastTxSource,
+};
+use shred_ingest::{JetstreamTxSource, ThorTxSource};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -59,7 +61,9 @@ pub fn run(interval_secs: u64) -> Result<()> {
             if waited >= 30 {
                 println!(
                     "{}",
-                    color::yellow("Service is taking longer than expected. Check: shredtop service status")
+                    color::yellow(
+                        "Service is taking longer than expected. Check: shredtop service status"
+                    )
                 );
                 return Ok(());
             }
@@ -67,7 +71,12 @@ pub fn run(interval_secs: u64) -> Result<()> {
     }
 
     RUNNING.store(true, Ordering::SeqCst);
-    unsafe { libc::signal(libc::SIGINT, handle_sigint as *const () as libc::sighandler_t) };
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            handle_sigint as *const () as libc::sighandler_t,
+        )
+    };
 
     println!(
         "{}",
@@ -112,7 +121,7 @@ pub fn run(interval_secs: u64) -> Result<()> {
 
 fn read_last_entry(path: &str) -> Option<serde_json::Value> {
     let content = std::fs::read_to_string(path).ok()?;
-    let line = content.lines().filter(|l| !l.is_empty()).last()?;
+    let line = content.lines().rfind(|l| !l.is_empty())?;
     serde_json::from_str(line).ok()
 }
 
@@ -139,9 +148,13 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
         let h = secs / 3600;
         let m = (secs % 3600) / 60;
         let s2 = secs % 60;
-        let u = if h > 0 { format!("{}h {}m {}s", h, m, s2) }
-                 else if m > 0 { format!("{}m {}s", m, s2) }
-                 else { format!("{}s", s2) };
+        let u = if h > 0 {
+            format!("{}h {}m {}s", h, m, s2)
+        } else if m > 0 {
+            format!("{}m {}s", m, s2)
+        } else {
+            format!("{}s", s2)
+        };
         (s, u)
     } else {
         ("—".into(), "—".into())
@@ -149,9 +162,15 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
 
     // Header
     out.push(color::bold(&"=".repeat(W)));
-    out.push(color::bold_cyan(&format!("{:^W$}", format!("  SHREDTOP  {}  ", time_str))));
+    out.push(color::bold_cyan(&format!(
+        "{:^W$}",
+        format!("  SHREDTOP  {}  ", time_str)
+    )));
     out.push(color::bold(&"=".repeat(W)));
-    out.push(color::dim(&format!("  Started: {}   Uptime: {}", started_str, uptime_str)));
+    out.push(color::dim(&format!(
+        "  Started: {}   Uptime: {}",
+        started_str, uptime_str
+    )));
     out.push(String::new());
 
     // Determine whether any baseline (rpc/geyser) source is present — must
@@ -169,9 +188,9 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
     // -----------------------------------------------------------------------
     // SHRED RACE — primary signal, shown first
     // -----------------------------------------------------------------------
-    out.push(color::bold(&format!(
-        "SHRED RACE  validator \u{2192} this machine  (since start):"
-    )));
+    out.push(color::bold(
+        "SHRED RACE  validator \u{2192} this machine  (since start):",
+    ));
     out.push(String::new());
     let race_pairs = entry["shred_race"].as_array();
     let has_race = race_pairs.map(|p| !p.is_empty()).unwrap_or(false);
@@ -194,7 +213,9 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
         });
         for (i, p) in pairs.iter().enumerate() {
             if i > 0 {
-                out.push(color::dim("  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"));
+                out.push(color::dim(
+                    "  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -",
+                ));
             }
             let sa = p["source_a"].as_str().unwrap_or("?");
             let sb = p["source_b"].as_str().unwrap_or("?");
@@ -236,9 +257,7 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
     out.push(color::dim(
         "  transaction signature. Timing uses the kernel UDP receive timestamp (SO_TIMESTAMPNS),",
     ));
-    out.push(color::dim(
-        "  before any userspace processing.",
-    ));
+    out.push(color::dim("  before any userspace processing."));
     out.push(String::new());
 
     // -----------------------------------------------------------------------
@@ -249,7 +268,16 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
     if has_rpc {
         out.push(color::bold(&format!(
             "{:<20}  {:>5}  {:>9}  {:>5}  {:>6}  {:>6}  {:>9}  {:>9}  {:>9}  {:>9}",
-            "SOURCE", "LINK", "SHREDS/s", "COV%", "TXS/s", "BEAT%", "LEAD avg", "LEAD p50", "LEAD p95", "LEAD p99",
+            "SOURCE",
+            "LINK",
+            "SHREDS/s",
+            "COV%",
+            "TXS/s",
+            "BEAT%",
+            "LEAD avg",
+            "LEAD p50",
+            "LEAD p95",
+            "LEAD p99",
         )));
     } else {
         out.push(color::bold(&format!(
@@ -267,7 +295,11 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
             let is_rpc = s["is_rpc"].as_bool().unwrap_or(false);
             let backfill = s["backfill"].as_u64().unwrap_or(0);
             let name_display: String = if backfill > 0 {
-                format!("{} {}", raw_name, color::yellow(&format!("[{}bf]", backfill)))
+                format!(
+                    "{} {}",
+                    raw_name,
+                    color::yellow(&format!("[{}bf]", backfill))
+                )
             } else {
                 raw_name.to_string()
             };
@@ -313,13 +345,16 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
                     ("baseline".into(), "—".into(), "—".into(), "—".into())
                 } else if let Some(mean_us) = s["lead_time_mean_us"].as_f64() {
                     let avg = format!("{:+.1}ms", mean_us / 1000.0);
-                    let p50 = s["lead_time_p50_us"].as_f64()
+                    let p50 = s["lead_time_p50_us"]
+                        .as_f64()
                         .map(|v| format!("{:+.1}ms", v / 1000.0))
                         .unwrap_or_else(|| "—".into());
-                    let p95 = s["lead_time_p95_us"].as_f64()
+                    let p95 = s["lead_time_p95_us"]
+                        .as_f64()
                         .map(|v| format!("{:+.1}ms", v / 1000.0))
                         .unwrap_or_else(|| "—".into());
-                    let p99 = s["lead_time_p99_us"].as_f64()
+                    let p99 = s["lead_time_p99_us"]
+                        .as_f64()
                         .map(|v| format!("{:+.1}ms", v / 1000.0))
                         .unwrap_or_else(|| "—".into());
                     (avg, p50, p95, p99)
@@ -329,7 +364,16 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
 
                 format!(
                     "{:<20}  {:>5}  {:>9}  {:>5}  {:>6}  {:>6}  {:>9}  {:>9}  {:>9}  {:>9}",
-                    name, link_str, shreds_str, cov_str, txs_str, beat_str, avg_str, p50_str, p95_str, p99_str,
+                    name,
+                    link_str,
+                    shreds_str,
+                    cov_str,
+                    txs_str,
+                    beat_str,
+                    avg_str,
+                    p50_str,
+                    p95_str,
+                    p99_str,
                 )
             } else {
                 format!(
@@ -370,7 +414,11 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
                     };
                     edge_lines.push(format!(
                         "  {}  {:<20} {}  by {:.2}ms avg  ({} samples)",
-                        symbol, raw_name, label, mean_ms.abs(), samples,
+                        symbol,
+                        raw_name,
+                        label,
+                        mean_ms.abs(),
+                        samples,
                     ));
                 }
             }
@@ -415,18 +463,6 @@ fn draw_dashboard(entry: &serde_json::Value) -> usize {
     count
 }
 
-fn format_num(n: u64) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out.chars().rev().collect()
-}
-
 // ---------------------------------------------------------------------------
 // Source construction — used by run.rs
 // ---------------------------------------------------------------------------
@@ -463,7 +499,7 @@ pub fn build_source(
                 pin_decode_core: entry.pin_decode_core,
                 shred_version: entry.shred_version,
                 capture_tx,
-                heartbeat_port: entry.heartbeat_port,  // None = auto-detect
+                heartbeat_port: entry.heartbeat_port, // None = auto-detect
             })
         }
         "rpc" => {
@@ -471,42 +507,61 @@ pub fn build_source(
                 .url
                 .clone()
                 .unwrap_or_else(|| "http://127.0.0.1:8899".into());
-            Box::new(RpcTxSource { url, pin_core: entry.pin_recv_core })
+            Box::new(RpcTxSource {
+                url,
+                pin_core: entry.pin_recv_core,
+            })
         }
         "geyser" => {
-            let url = entry
-                .url
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("source '{}': missing url for geyser source", name))?;
-            Box::new(GeyserTxSource { name, url, x_token: entry.x_token.clone() })
+            let url = entry.url.clone().ok_or_else(|| {
+                anyhow::anyhow!("source '{}': missing url for geyser source", name)
+            })?;
+            Box::new(GeyserTxSource {
+                name,
+                url,
+                x_token: entry.x_token.clone(),
+            })
         }
         "jito-grpc" => {
-            let url = entry
-                .url
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("source '{}': missing url for jito-grpc source", name))?;
+            let url = entry.url.clone().ok_or_else(|| {
+                anyhow::anyhow!("source '{}': missing url for jito-grpc source", name)
+            })?;
             Box::new(JitoShredstreamSource { name, url })
         }
         "shreder" | "arpc" => {
-            let url = entry
-                .url
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("source '{}': missing url for {} source", name, entry.source_type))?;
-            Box::new(GeyserTxSource { name, url, x_token: entry.x_token.clone() })
+            let url = entry.url.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "source '{}': missing url for {} source",
+                    name,
+                    entry.source_type
+                )
+            })?;
+            Box::new(GeyserTxSource {
+                name,
+                url,
+                x_token: entry.x_token.clone(),
+            })
         }
         "thor" => {
             let url = entry
                 .url
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("source '{}': missing url for thor source", name))?;
-            Box::new(ThorTxSource { name, url, x_token: entry.x_token.clone() })
+            Box::new(ThorTxSource {
+                name,
+                url,
+                x_token: entry.x_token.clone(),
+            })
         }
         "jetstream" => {
-            let url = entry
-                .url
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("source '{}': missing url for jetstream source", name))?;
-            Box::new(JetstreamTxSource { name, url, x_token: entry.x_token.clone() })
+            let url = entry.url.clone().ok_or_else(|| {
+                anyhow::anyhow!("source '{}': missing url for jetstream source", name)
+            })?;
+            Box::new(JetstreamTxSource {
+                name,
+                url,
+                x_token: entry.x_token.clone(),
+            })
         }
         "turbine" => {
             let port = entry.port.unwrap_or(8002);
@@ -520,7 +575,11 @@ pub fn build_source(
             })
         }
         "unicast" => {
-            let addr = entry.multicast_addr.as_deref().unwrap_or("0.0.0.0").to_string();
+            let addr = entry
+                .multicast_addr
+                .as_deref()
+                .unwrap_or("0.0.0.0")
+                .to_string();
             let port = entry.port.unwrap_or(6000);
             Box::new(UnicastTxSource {
                 name,

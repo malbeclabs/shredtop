@@ -7,7 +7,10 @@
 
 use anyhow::Result;
 use serde::Serialize;
-use shred_ingest::{CaptureEvent, DecodedTx, FanInSource, IpSnapshot, LeaderCache, ShredPairSnapshot, SourceMetricsSnapshot};
+use shred_ingest::{
+    CaptureEvent, DecodedTx, FanInSource, IpSnapshot, LeaderCache, ShredPairSnapshot,
+    SourceMetricsSnapshot,
+};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -104,7 +107,9 @@ pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Resul
 
     let mut fan_in = FanInSource::new();
     fan_in.filter_programs = config.filter_programs.clone();
-    fan_in.leader_cache = config.leader_filter.as_ref()
+    fan_in.leader_cache = config
+        .leader_filter
+        .as_ref()
         .filter(|lf| lf.enabled)
         .map(|lf| LeaderCache::new(&lf.rpc_url, lf.dz_rpc_url.as_deref()));
     for entry in &config.sources {
@@ -115,9 +120,7 @@ pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Resul
     let (out_tx, out_rx) = crossbeam_channel::bounded::<DecodedTx>(4096);
     let (all_metrics, race_tracker, _handles) = fan_in.start(out_tx);
 
-    std::thread::spawn(move || {
-        for _ in out_rx {}
-    });
+    std::thread::spawn(move || for _ in out_rx {});
 
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -165,7 +168,9 @@ pub fn run(config: &ProbeConfig, interval_secs: u64, log_path: PathBuf) -> Resul
         }
 
         if let Some(ref updater) = metrics_updater {
-            updater.update(MetricsSnapshot { sources: curr.clone() });
+            updater.update(MetricsSnapshot {
+                sources: curr.clone(),
+            });
         }
 
         prev = curr;

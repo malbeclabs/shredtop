@@ -20,7 +20,7 @@ pub fn run() -> Result<()> {
         }
     };
 
-    let line = match content.lines().filter(|l| !l.is_empty()).last() {
+    let line = match content.lines().rfind(|l| !l.is_empty()) {
         Some(l) => l,
         None => {
             eprintln!("Metrics log is empty — service may just be starting.");
@@ -46,9 +46,13 @@ pub fn run() -> Result<()> {
         let h = secs / 3600;
         let m = (secs % 3600) / 60;
         let s2 = secs % 60;
-        let u = if h > 0 { format!("{}h {}m {}s", h, m, s2) }
-                 else if m > 0 { format!("{}m {}s", m, s2) }
-                 else { format!("{}s", s2) };
+        let u = if h > 0 {
+            format!("{}h {}m {}s", h, m, s2)
+        } else if m > 0 {
+            format!("{}m {}s", m, s2)
+        } else {
+            format!("{}s", s2)
+        };
         (s, u)
     } else {
         ("—".into(), "—".into())
@@ -58,17 +62,30 @@ pub fn run() -> Result<()> {
     // printing headers so column layout can be decided upfront.
     let has_rpc = entry["sources"]
         .as_array()
-        .map(|sources| sources.iter().any(|s| s["is_rpc"].as_bool().unwrap_or(false)))
+        .map(|sources| {
+            sources
+                .iter()
+                .any(|s| s["is_rpc"].as_bool().unwrap_or(false))
+        })
         .unwrap_or(false);
 
     let width = 100;
     println!("{}", color::bold(&"=".repeat(width)));
     println!(
         "{}",
-        color::bold_cyan(&format!("{:^width$}", format!(" SHREDTOP STATUS  {} ", time_str)))
+        color::bold_cyan(&format!(
+            "{:^width$}",
+            format!(" SHREDTOP STATUS  {} ", time_str)
+        ))
     );
     println!("{}", color::bold(&"=".repeat(width)));
-    println!("{}", color::dim(&format!("  Started: {}   Uptime: {}", started_str, uptime_str)));
+    println!(
+        "{}",
+        color::dim(&format!(
+            "  Started: {}   Uptime: {}",
+            started_str, uptime_str
+        ))
+    );
     println!();
 
     if has_rpc {
@@ -76,7 +93,15 @@ pub fn run() -> Result<()> {
             "{}",
             color::bold(&format!(
                 "{:<20}  {:>9}  {:>5}  {:>6}  {:>6}  {:>9}  {:>9}  {:>9}  {:>9}",
-                "SOURCE", "SHREDS/s", "COV%", "TXS/s", "BEAT%", "LEAD avg", "LEAD p50", "LEAD p95", "LEAD p99",
+                "SOURCE",
+                "SHREDS/s",
+                "COV%",
+                "TXS/s",
+                "BEAT%",
+                "LEAD avg",
+                "LEAD p50",
+                "LEAD p95",
+                "LEAD p99",
             ))
         );
     } else {
@@ -123,13 +148,16 @@ pub fn run() -> Result<()> {
                     ("baseline".into(), "—".into(), "—".into(), "—".into())
                 } else if let Some(mean_us) = s["lead_time_mean_us"].as_f64() {
                     let avg = format!("{:+.1}ms", mean_us / 1000.0);
-                    let p50 = s["lead_time_p50_us"].as_f64()
+                    let p50 = s["lead_time_p50_us"]
+                        .as_f64()
                         .map(|v| format!("{:+.1}ms", v / 1000.0))
                         .unwrap_or_else(|| "—".into());
-                    let p95 = s["lead_time_p95_us"].as_f64()
+                    let p95 = s["lead_time_p95_us"]
+                        .as_f64()
                         .map(|v| format!("{:+.1}ms", v / 1000.0))
                         .unwrap_or_else(|| "—".into());
-                    let p99 = s["lead_time_p99_us"].as_f64()
+                    let p99 = s["lead_time_p99_us"]
+                        .as_f64()
                         .map(|v| format!("{:+.1}ms", v / 1000.0))
                         .unwrap_or_else(|| "—".into());
                     (avg, p50, p95, p99)
@@ -141,18 +169,19 @@ pub fn run() -> Result<()> {
                     name, shreds_str, cov, txs, beat, avg_str, p50_str, p95_str, p99_str,
                 )
             } else {
-                format!(
-                    "{:<20}  {:>9}  {:>5}  {:>6.0}",
-                    name, shreds_str, cov, txs,
-                )
+                format!("{:<20}  {:>9}  {:>5}  {:>6.0}", name, shreds_str, cov, txs,)
             };
 
             let row = if is_rpc {
                 color::dim(&row)
             } else if let Some(beat) = s["beat_rpc_pct"].as_f64() {
-                if beat >= 60.0 { color::green(&row) }
-                else if beat >= 40.0 { color::yellow(&row) }
-                else { color::red(&row) }
+                if beat >= 60.0 {
+                    color::green(&row)
+                } else if beat >= 40.0 {
+                    color::yellow(&row)
+                } else {
+                    color::red(&row)
+                }
             } else {
                 row
             };
@@ -183,9 +212,10 @@ pub fn run() -> Result<()> {
     println!();
 
     // Shred-level race section
-    println!("{}", color::bold(&format!(
-        "SHRED RACE  validator \u{2192} this machine  (since start):"
-    )));
+    println!(
+        "{}",
+        color::bold("SHRED RACE  validator \u{2192} this machine  (since start):")
+    );
     let race_pairs = entry["shred_race"].as_array();
     let has_race = race_pairs.map(|p| !p.is_empty()).unwrap_or(false);
     if !has_race {
@@ -255,12 +285,16 @@ pub fn run() -> Result<()> {
     println!("{}", color::dim(
         "  Matched on (slot, shred_index) \u{2014} when the same shred arrives on both feeds, records"
     ));
-    println!("{}", color::dim(
-        "  which relay delivered it first and by how much. Timing uses the kernel UDP receive"
-    ));
-    println!("{}", color::dim(
-        "  timestamp (SO_TIMESTAMPNS), before any userspace processing."
-    ));
+    println!(
+        "{}",
+        color::dim(
+            "  which relay delivered it first and by how much. Timing uses the kernel UDP receive"
+        )
+    );
+    println!(
+        "{}",
+        color::dim("  timestamp (SO_TIMESTAMPNS), before any userspace processing.")
+    );
     println!();
     if !has_rpc {
         println!(
@@ -273,20 +307,11 @@ pub fn run() -> Result<()> {
     }
     println!(
         "{}",
-        color::dim(&format!("Log: {}  (shredtop service status for service health)", DEFAULT_LOG))
+        color::dim(&format!(
+            "Log: {}  (shredtop service status for service health)",
+            DEFAULT_LOG
+        ))
     );
 
     Ok(())
-}
-
-fn format_num(n: u64) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out.chars().rev().collect()
 }
