@@ -149,7 +149,9 @@ async fn run_jito_shredstream(
 
         // The proxy sends a serialized Vec<solana_entry::entry::Entry>. Read it
         // Entry by Entry so one unreadable transaction does not drop the batch.
-        for transaction in read_entry_batch(&msg.entries) {
+        let (txs, skipped) = read_entry_batch(&msg.entries);
+        metrics.entries_skipped.fetch_add(skipped, Relaxed);
+        for transaction in txs {
             metrics.txs_decoded.fetch_add(1, Relaxed);
             let decoded = DecodedTx {
                 transaction,
