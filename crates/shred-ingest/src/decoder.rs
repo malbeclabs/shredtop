@@ -272,9 +272,13 @@ const CODE_NUM_CODE_OFF: usize = 85; // u16 LE: number of coding shreds in FEC s
 const CODE_POSITION_OFF: usize = 87; // u16 LE: this coding shred's position (0-based)
 const CODE_HDR_END: usize = 89; // minimum length for a coding shred
 
-// Agave Merkle shred fixed buffer size used as the RS symbol width.
-// Both data and coding shreds are padded / truncated to this size for RS.
-const SHRED_RS_SIZE: usize = 1228;
+// Merkle shred sizes, as in Agave `shred::merkle`, for finding the erasure
+// coded part of a shred (see `erasure_shard`).
+const SIGNATURE_SIZE: usize = 64;
+const DATA_SHRED_PAYLOAD: usize = 1203;
+const CODE_SHRED_PAYLOAD: usize = 1228;
+const MERKLE_ROOT_SIZE: usize = 32;
+const MERKLE_PROOF_ENTRY_SIZE: usize = 20;
 
 /// Parse slot, index and fec_set_index from any shred type (code or data).
 /// Returns None only if the buffer is shorter than the common header.
@@ -391,6 +395,9 @@ struct SlotState {
     /// mid-block (e.g. DoubleZero, which only sends the tail FEC sets) can
     /// still accumulate a contiguous run without waiting for idx=0.
     next_contiguous: u32,
+    /// Index of the shred at the start of entry_buf (u32::MAX until the
+    /// first shred arrives).
+    first_index: u32,
     /// Accumulated entry bytes from contiguous data shreds
     entry_buf: Vec<u8>,
     /// Bytes already consumed from entry_buf
@@ -431,6 +438,7 @@ impl SlotState {
         Self {
             data_payloads: HashMap::with_capacity(64),
             next_contiguous: u32::MAX, // set on first shred receipt
+            first_index: u32::MAX,
             entry_buf: Vec::with_capacity(64 * 1024),
             consumed: 0,
             max_index: 0,
@@ -455,6 +463,7 @@ impl SlotState {
     fn set_first_index(&mut self, idx: u32) {
         if self.next_contiguous == u32::MAX {
             self.next_contiguous = idx;
+            self.first_index = idx;
             self.boundary_scanned = idx == 0;
             if idx == 0 {
                 self.batch_starts.push_back(0);
@@ -462,14 +471,77 @@ impl SlotState {
         }
     }
 
+    /// Whether data shred `index` is already in this slot: waiting in
+    /// data_payloads, or already copied into entry_buf.
+    fn has_shred(&self, index: u32) -> bool {
+        self.data_payloads.contains_key(&index)
+            || (self.first_index..self.next_contiguous).contains(&index)
+    }
+
+    /// Add a received or rebuilt data shred. Returns false if the slot
+    /// already had it.
+    fn add_data_shred(
+        &mut self,
+        index: u32,
+        shred: &[u8],
+        last_in_slot: bool,
+        payload: Vec<u8>,
+    ) -> bool {
+        self.set_first_index(index);
+        if self.has_shred(index) {
+            return false;
+        }
+        if index > self.max_index {
+            self.max_index = index;
+        }
+        if last_in_slot {
+            self.last_seen = true;
+        }
+        if ends_entry_batch(shred) {
+            self.batch_ends.insert(index);
+        }
+        self.data_payloads.insert(index, payload);
+        self.shreds_seen += 1;
+        true
+    }
+
     /// Try to flush contiguous data shred payloads into entry_buf
     fn flush_contiguous(&mut self) {
+        self.prepend_earlier();
         while let Some(payload) = self.data_payloads.remove(&self.next_contiguous) {
             self.entry_buf.extend_from_slice(&payload);
             if self.batch_ends.remove(&self.next_contiguous) {
                 self.batch_starts.push_back(self.entry_buf.len());
             }
             self.next_contiguous += 1;
+        }
+    }
+
+    /// Put shreds that come just before the start of entry_buf in front of
+    /// it. They show up when the slot's first shreds arrive out of order, or
+    /// when FEC rebuilds a shred lost before the first one we received.
+    /// Only done while nothing has been read from entry_buf yet.
+    fn prepend_earlier(&mut self) {
+        while self.consumed == 0 && !self.boundary_scanned && self.first_index > 0 {
+            let idx = self.first_index - 1;
+            let Some(payload) = self.data_payloads.remove(&idx) else {
+                return;
+            };
+            let n = payload.len();
+            self.entry_buf.splice(0..0, payload);
+            for start in self.batch_starts.iter_mut() {
+                *start += n;
+            }
+            if self.batch_ends.remove(&idx) {
+                // The old front of entry_buf starts a batch.
+                self.batch_starts.push_front(n);
+            }
+            self.first_index = idx;
+            if idx == 0 {
+                // The slot starts with a batch.
+                self.batch_starts.push_front(0);
+                self.boundary_scanned = true;
+            }
         }
     }
 
@@ -489,77 +561,114 @@ impl SlotState {
 // FEC set state: buffer shards for Reed-Solomon recovery
 // ---------------------------------------------------------------------------
 
+/// The erasure coded part of a Merkle shred, as Agave codes it: data shreds
+/// from just after the signature, coding shreds from just after their
+/// headers, both up to the end of the data buffer. The chained Merkle root,
+/// the Merkle proof and the retransmitter signature that follow are not
+/// coded. Both kinds give the same length within an FEC set.
+///
+/// Returns None for legacy shreds and for packets too short for their variant.
+fn erasure_shard(bytes: &[u8]) -> Option<&[u8]> {
+    let variant = *bytes.get(VARIANT_OFF)?;
+    let proof_size = usize::from(variant & 0x0F);
+    let (start, payload_size, chained, resigned) = match variant & 0xF0 {
+        0x40 => (CODE_HDR_END, CODE_SHRED_PAYLOAD, false, false),
+        0x60 => (CODE_HDR_END, CODE_SHRED_PAYLOAD, true, false),
+        0x70 => (CODE_HDR_END, CODE_SHRED_PAYLOAD, true, true),
+        0x80 if variant != LEGACY_DATA_VARIANT => {
+            (SIGNATURE_SIZE, DATA_SHRED_PAYLOAD, false, false)
+        }
+        0x90 => (SIGNATURE_SIZE, DATA_SHRED_PAYLOAD, true, false),
+        0xb0 => (SIGNATURE_SIZE, DATA_SHRED_PAYLOAD, true, true),
+        _ => return None,
+    };
+    let end = payload_size.checked_sub(
+        proof_size * MERKLE_PROOF_ENTRY_SIZE
+            + if chained { MERKLE_ROOT_SIZE } else { 0 }
+            + if resigned { SIGNATURE_SIZE } else { 0 },
+    )?;
+    bytes.get(start..end)
+}
+
+#[derive(Default)]
 struct FecSet {
-    num_data: usize,
-    num_coding: usize,
-    shards: HashMap<usize, Vec<u8>>,
-    recovered: bool,
+    /// (num_data, num_coding), from the first coding shred of the set.
+    layout: Option<(usize, usize)>,
+    /// Erasure shards of data shreds, keyed by index within the set.
+    data: HashMap<usize, Vec<u8>>,
+    /// Erasure shards of coding shreds, keyed by position.
+    coding: HashMap<usize, Vec<u8>>,
+    /// Recovery ran, or every data shred arrived: nothing left to do.
+    done: bool,
 }
 
 impl FecSet {
-    fn new(num_data: usize, num_coding: usize) -> Self {
-        Self {
-            num_data,
-            num_coding,
-            shards: HashMap::with_capacity(num_data + num_coding),
-            recovered: false,
+    fn data_count(&self, num_data: usize) -> usize {
+        self.data.keys().filter(|&&i| i < num_data).count()
+    }
+
+    /// A data shred is missing and enough shards arrived to rebuild it.
+    fn ready_to_recover(&mut self) -> bool {
+        let Some((num_data, _)) = self.layout else {
+            return false;
+        };
+        if self.done {
+            return false;
         }
+        let have_data = self.data_count(num_data);
+        if have_data >= num_data {
+            // Nothing to recover: free the shards.
+            self.finish();
+            return false;
+        }
+        have_data + self.coding.len() >= num_data
     }
 
-    fn ready_to_recover(&self) -> bool {
-        !self.recovered && self.shards.len() >= self.num_data
+    fn finish(&mut self) {
+        self.done = true;
+        self.data = HashMap::new();
+        self.coding = HashMap::new();
     }
 
+    /// Rebuild the missing data shreds. Returns (index within the set, shred
+    /// bytes) for each, with the signature zeroed: the rest of the shred
+    /// parses like a received one.
     fn reconstruct(&mut self) -> Vec<(usize, Vec<u8>)> {
-        self.recovered = true;
-
-        let total = self.num_data + self.num_coding;
-        if total == 0 || self.num_data == 0 || self.num_coding == 0 {
+        let Some((num_data, num_coding)) = self.layout else {
             return Vec::new();
-        }
-
-        let mut shard_opts: Vec<Option<Vec<u8>>> =
-            (0..total).map(|i| self.shards.get(&i).cloned()).collect();
-
-        let missing_data: Vec<usize> = (0..self.num_data)
-            .filter(|i| !self.shards.contains_key(i))
+        };
+        let mut shards: Vec<Option<Vec<u8>>> = (0..num_data)
+            .map(|i| self.data.remove(&i))
+            .chain((0..num_coding).map(|i| self.coding.remove(&i)))
             .collect();
+        self.finish();
 
-        if missing_data.is_empty() {
+        let missing: Vec<usize> = (0..num_data).filter(|&i| shards[i].is_none()).collect();
+        if missing.is_empty() {
             return Vec::new();
         }
 
-        let rs = match ReedSolomon::new(self.num_data, self.num_coding) {
+        let rs = match ReedSolomon::new(num_data, num_coding) {
             Ok(r) => r,
             Err(e) => {
-                tracing::debug!(
-                    num_data = self.num_data,
-                    num_coding = self.num_coding,
-                    err = %e,
-                    "FEC: failed to create ReedSolomon instance"
-                );
+                tracing::debug!(num_data, num_coding, err = %e, "FEC: bad set layout");
                 return Vec::new();
             }
         };
-
-        if let Err(e) = rs.reconstruct(&mut shard_opts) {
-            tracing::debug!(
-                num_data = self.num_data,
-                num_coding = self.num_coding,
-                present = self.shards.len(),
-                err = %e,
-                "FEC: RS reconstruction failed"
-            );
+        if let Err(e) = rs.reconstruct_data(&mut shards) {
+            tracing::debug!(num_data, num_coding, err = %e, "FEC: RS reconstruction failed");
             return Vec::new();
         }
 
-        let mut result = Vec::with_capacity(missing_data.len());
-        for idx in missing_data {
-            if let Some(Some(shard)) = shard_opts.get(idx) {
-                result.push((idx, shard.clone()));
-            }
-        }
-        result
+        missing
+            .into_iter()
+            .filter_map(|i| {
+                let shard = shards[i].take()?;
+                let mut shred = vec![0u8; SIGNATURE_SIZE];
+                shred.extend_from_slice(&shard);
+                Some((i, shred))
+            })
+            .collect()
     }
 }
 
@@ -569,6 +678,8 @@ impl FecSet {
 
 const MAX_ACTIVE_SLOTS: usize = 64;
 const SLOT_EXPIRY_DISTANCE: u64 = 32;
+/// Slots an FEC set's data shards wait for its first coding shred.
+const FEC_WAIT_SLOTS: u64 = 2;
 
 pub struct ShredDecoder {
     rx: Receiver<RawShred>,
@@ -637,7 +748,14 @@ impl ShredDecoder {
                     }
                     false
                 });
-                fec_sets.retain(|&s, _| s + SLOT_EXPIRY_DISTANCE >= highest_slot);
+                fec_sets.retain(|&s, sets| {
+                    // Data shards wait for coding shreds only briefly: a feed
+                    // that sends none would otherwise fill memory with them.
+                    if s + FEC_WAIT_SLOTS < highest_slot {
+                        sets.retain(|_, fec| fec.layout.is_some());
+                    }
+                    s + SLOT_EXPIRY_DISTANCE >= highest_slot
+                });
             }
 
             if highest_slot.saturating_sub(slot) > SLOT_EXPIRY_DISTANCE {
@@ -645,133 +763,49 @@ impl ShredDecoder {
             }
 
             let now = metrics::now_ns();
+            let recv_ns = raw_shred.recv_timestamp_ns;
 
             // ── Coding shred path ────────────────────────────────────────────
             if let Some(code_info) = parse_coding_header(&raw_shred.data) {
                 let num_data = code_info.num_data as usize;
                 let num_coding = code_info.num_coding as usize;
-                let code_position = code_info.position as usize;
-                let shard_pos = num_data + code_position;
-
-                if code_position >= num_coding {
+                let position = code_info.position as usize;
+                if position >= num_coding {
                     continue;
                 }
-
-                let slot_fec = fec_sets.entry(slot).or_default();
-                let fec = slot_fec.entry(fec_set_index).or_insert_with(|| {
-                    // Count expected data shreds per FEC set as we discover them.
-                    // This is the correct denominator for coverage on tail-only feeds
-                    // where the last-in-slot marker rarely arrives.
-                    self.metrics
-                        .coverage_shreds_expected
-                        .fetch_add(num_data as u64, Relaxed);
-                    FecSet::new(num_data, num_coding)
-                });
-
-                if fec.num_data != num_data || fec.num_coding != num_coding {
+                let Some(shard) = erasure_shard(&raw_shred.data) else {
                     continue;
+                };
+
+                let fec = fec_sets
+                    .entry(slot)
+                    .or_default()
+                    .entry(fec_set_index)
+                    .or_default();
+                match fec.layout {
+                    None => {
+                        // Count expected data shreds per FEC set as we discover
+                        // them. This is the correct denominator for coverage on
+                        // tail-only feeds where the last-in-slot marker rarely
+                        // arrives.
+                        self.metrics
+                            .coverage_shreds_expected
+                            .fetch_add(num_data as u64, Relaxed);
+                        fec.layout = Some((num_data, num_coding));
+                    }
+                    Some(layout) if layout != (num_data, num_coding) => continue,
+                    Some(_) => {}
                 }
-
-                fec.shards.entry(shard_pos).or_insert_with(|| {
-                    let mut buf = raw_shred.data.clone();
-                    buf.resize(SHRED_RS_SIZE, 0);
-                    buf
-                });
-
+                if !fec.done {
+                    fec.coding.entry(position).or_insert_with(|| shard.to_vec());
+                }
                 if fec.ready_to_recover() {
                     let recovered = fec.reconstruct();
-                    fec.shards.clear();
                     if !recovered.is_empty() {
-                        let slot_state = slots.entry(slot).or_insert_with(|| {
-                            self.metrics.slots_attempted.fetch_add(1, Relaxed);
-                            SlotState::new(now)
-                        });
-                        slot_state.last_touch_ns = now;
-                        if raw_shred.recv_timestamp_ns < slot_state.earliest_recv_ns {
-                            slot_state.earliest_recv_ns = raw_shred.recv_timestamp_ns;
-                        }
-
-                        let mut recovered_count = 0u64;
-                        for (data_shard_idx, shard_bytes) in recovered {
-                            let global_idx = fec_set_index.saturating_add(data_shard_idx as u32);
-                            if slot_state.data_payloads.contains_key(&global_idx) {
-                                continue;
-                            }
-                            if let Some((last_in_slot, payload)) = parse_data_payload(&shard_bytes)
-                            {
-                                slot_state.set_first_index(global_idx);
-                                if global_idx > slot_state.max_index {
-                                    slot_state.max_index = global_idx;
-                                }
-                                if last_in_slot {
-                                    slot_state.last_seen = true;
-                                }
-                                if ends_entry_batch(&shard_bytes) {
-                                    slot_state.batch_ends.insert(global_idx);
-                                }
-                                slot_state.data_payloads.insert(global_idx, payload);
-                                recovered_count += 1;
-                            }
-                        }
-
-                        if recovered_count > 0 {
-                            self.metrics
-                                .fec_recovered_shreds
-                                .fetch_add(recovered_count, Relaxed);
-                            self.metrics
-                                .coverage_shreds_seen
-                                .fetch_add(recovered_count, Relaxed);
-                            slot_state.shreds_seen += recovered_count as u32;
-                            slot_state.fec_recovered_count += recovered_count as u32;
-
-                            slot_state.flush_contiguous();
-
-                            if slot_state.last_seen
-                                && slot_state.next_contiguous > slot_state.max_index
-                                && !slot_state.counted
-                            {
-                                self.metrics.slots_complete.fetch_add(1, Relaxed);
-                                slot_state.counted = true;
-                                self.metrics.push_slot_stats(SlotStats {
-                                    slot,
-                                    shreds_seen: slot_state.shreds_seen,
-                                    fec_recovered: slot_state.fec_recovered_count,
-                                    txs_decoded: slot_state.txs_decoded,
-                                    outcome: SlotOutcome::Complete,
-                                });
-                            }
-
-                            let txs = slot_state.try_deserialize();
-                            self.metrics
-                                .entries_skipped
-                                .fetch_add(std::mem::take(&mut slot_state.skipped), Relaxed);
-                            if !txs.is_empty() {
-                                let decode_done = metrics::now_ns();
-                                metrics::METRICS.record_stage(
-                                    &metrics::METRICS.decode_ns,
-                                    decode_done - decode_start,
-                                );
-
-                                let tx_count = txs.len() as u32;
-                                slot_state.txs_decoded += tx_count;
-                                self.metrics.txs_decoded.fetch_add(tx_count as u64, Relaxed);
-
-                                for tx in txs {
-                                    let decoded = DecodedTx {
-                                        transaction: tx,
-                                        slot,
-                                        shred_recv_ns: slot_state.earliest_recv_ns,
-                                        decode_done_ns: decode_done,
-                                    };
-                                    if self.tx.try_send(decoded).is_err() {
-                                        self.metrics.txs_dropped.fetch_add(1, Relaxed);
-                                    }
-                                }
-                            }
-                        }
+                        let state = self.slot_state(&mut slots, slot, now, recv_ns);
+                        self.insert_recovered(state, slot, fec_set_index, recovered, decode_start);
                     }
                 }
-
                 continue;
             }
 
@@ -781,84 +815,141 @@ impl ShredDecoder {
                 None => continue,
             };
 
-            self.metrics.coverage_shreds_seen.fetch_add(1, Relaxed);
+            // Keep the erasure shard: with the coding shreds it can rebuild
+            // a data shred lost on the way.
+            let fec = fec_sets
+                .entry(slot)
+                .or_default()
+                .entry(fec_set_index)
+                .or_default();
+            if let (false, Some(i), Some(shard)) = (
+                fec.done,
+                shred_index.checked_sub(fec_set_index),
+                erasure_shard(&raw_shred.data),
+            ) {
+                fec.data.entry(i as usize).or_insert_with(|| shard.to_vec());
+            }
+            let recovered = if fec.ready_to_recover() {
+                fec.reconstruct()
+            } else {
+                Vec::new()
+            };
 
-            let state = slots.entry(slot).or_insert_with(|| {
-                self.metrics.slots_attempted.fetch_add(1, Relaxed);
-                SlotState::new(now)
-            });
-            state.last_touch_ns = now;
-            if raw_shred.recv_timestamp_ns < state.earliest_recv_ns {
-                state.earliest_recv_ns = raw_shred.recv_timestamp_ns;
+            let state = self.slot_state(&mut slots, slot, now, recv_ns);
+            if state.add_data_shred(shred_index, &raw_shred.data, last_in_slot, payload) {
+                self.metrics.coverage_shreds_seen.fetch_add(1, Relaxed);
+                state.flush_contiguous();
+                self.decode_slot(state, slot, decode_start);
             }
 
-            let data_shard_idx = shred_index.checked_sub(fec_set_index).map(|i| i as usize);
-            if let Some(shard_pos) = data_shard_idx {
-                let slot_fec = fec_sets.entry(slot).or_default();
-                if let Some(fec) = slot_fec.get_mut(&fec_set_index) {
-                    fec.shards.entry(shard_pos).or_insert_with(|| {
-                        let mut buf = raw_shred.data.clone();
-                        buf.resize(SHRED_RS_SIZE, 0);
-                        buf
-                    });
-                }
-            }
-
-            state.set_first_index(shred_index);
-
-            if shred_index > state.max_index {
-                state.max_index = shred_index;
-            }
-            if last_in_slot {
-                state.last_seen = true;
-            }
-            if ends_entry_batch(&raw_shred.data) {
-                state.batch_ends.insert(shred_index);
-            }
-
-            if state.data_payloads.insert(shred_index, payload).is_none() {
-                state.shreds_seen += 1;
-            }
-            state.flush_contiguous();
-
-            if state.last_seen && state.next_contiguous > state.max_index && !state.counted {
-                self.metrics.slots_complete.fetch_add(1, Relaxed);
-                state.counted = true;
-                self.metrics.push_slot_stats(SlotStats {
-                    slot,
-                    shreds_seen: state.shreds_seen,
-                    fec_recovered: state.fec_recovered_count,
-                    txs_decoded: state.txs_decoded,
-                    outcome: SlotOutcome::Complete,
-                });
-            }
-
-            let txs = state.try_deserialize();
-            self.metrics
-                .entries_skipped
-                .fetch_add(std::mem::take(&mut state.skipped), Relaxed);
-            if !txs.is_empty() {
-                let decode_done = metrics::now_ns();
-                metrics::METRICS
-                    .record_stage(&metrics::METRICS.decode_ns, decode_done - decode_start);
-
-                let tx_count = txs.len() as u32;
-                state.txs_decoded += tx_count;
-                self.metrics.txs_decoded.fetch_add(tx_count as u64, Relaxed);
-
-                for tx in txs {
-                    let decoded = DecodedTx {
-                        transaction: tx,
-                        slot,
-                        shred_recv_ns: state.earliest_recv_ns,
-                        decode_done_ns: decode_done,
-                    };
-                    let _ = self.tx.try_send(decoded);
-                }
+            if !recovered.is_empty() {
+                self.insert_recovered(state, slot, fec_set_index, recovered, decode_start);
             }
         }
 
         Ok(())
+    }
+
+    /// The slot's state, created on its first shred.
+    fn slot_state<'a>(
+        &self,
+        slots: &'a mut HashMap<u64, SlotState>,
+        slot: u64,
+        now: u64,
+        recv_ns: u64,
+    ) -> &'a mut SlotState {
+        let state = slots.entry(slot).or_insert_with(|| {
+            self.metrics.slots_attempted.fetch_add(1, Relaxed);
+            SlotState::new(now)
+        });
+        state.last_touch_ns = now;
+        if recv_ns < state.earliest_recv_ns {
+            state.earliest_recv_ns = recv_ns;
+        }
+        state
+    }
+
+    /// Add data shreds rebuilt by FEC to their slot, then decode.
+    fn insert_recovered(
+        &self,
+        state: &mut SlotState,
+        slot: u64,
+        fec_set_index: u32,
+        recovered: Vec<(usize, Vec<u8>)>,
+        decode_start: u64,
+    ) {
+        let mut recovered_count = 0u32;
+        for (i, shred) in recovered {
+            let index = fec_set_index.saturating_add(i as u32);
+            // Rebuilt shreds are not checked against the Merkle root. A
+            // corrupted shard makes RS output garbage, so at least require
+            // the header to say what the shred must be.
+            if shred_slot_index(&shred) != Some((slot, index, fec_set_index)) {
+                continue;
+            }
+            let Some((last_in_slot, payload)) = parse_data_payload(&shred) else {
+                continue;
+            };
+            if state.add_data_shred(index, &shred, last_in_slot, payload) {
+                recovered_count += 1;
+            }
+        }
+        if recovered_count == 0 {
+            return;
+        }
+
+        self.metrics
+            .fec_recovered_shreds
+            .fetch_add(u64::from(recovered_count), Relaxed);
+        self.metrics
+            .coverage_shreds_seen
+            .fetch_add(u64::from(recovered_count), Relaxed);
+        state.fec_recovered_count += recovered_count;
+        state.flush_contiguous();
+        self.decode_slot(state, slot, decode_start);
+    }
+
+    /// After new data reached a slot: count it as complete once every shred
+    /// is in, then decode what can be decoded and send it on.
+    fn decode_slot(&self, state: &mut SlotState, slot: u64, decode_start: u64) {
+        if state.last_seen && state.next_contiguous > state.max_index && !state.counted {
+            self.metrics.slots_complete.fetch_add(1, Relaxed);
+            state.counted = true;
+            self.metrics.push_slot_stats(SlotStats {
+                slot,
+                shreds_seen: state.shreds_seen,
+                fec_recovered: state.fec_recovered_count,
+                txs_decoded: state.txs_decoded,
+                outcome: SlotOutcome::Complete,
+            });
+        }
+
+        let txs = state.try_deserialize();
+        self.metrics
+            .entries_skipped
+            .fetch_add(std::mem::take(&mut state.skipped), Relaxed);
+        if txs.is_empty() {
+            return;
+        }
+
+        let decode_done = metrics::now_ns();
+        metrics::METRICS.record_stage(&metrics::METRICS.decode_ns, decode_done - decode_start);
+
+        let tx_count = txs.len() as u32;
+        state.txs_decoded += tx_count;
+        self.metrics.txs_decoded.fetch_add(tx_count as u64, Relaxed);
+
+        for tx in txs {
+            let decoded = DecodedTx {
+                transaction: tx,
+                slot,
+                shred_recv_ns: state.earliest_recv_ns,
+                decode_done_ns: decode_done,
+            };
+            if self.tx.try_send(decoded).is_err() {
+                self.metrics.txs_dropped.fetch_add(1, Relaxed);
+            }
+        }
     }
 }
 
@@ -993,14 +1084,15 @@ mod tests {
         assert_eq!(state.entry_buf, vec![10, 11]);
         assert_eq!(state.next_contiguous, 1002);
 
+        // Nothing read yet, so an earlier shred goes in front.
         state.data_payloads.insert(1000, vec![99]);
         state.flush_contiguous();
-        assert_eq!(state.entry_buf, vec![10, 11], "1000 is stale, not flushed");
+        assert_eq!(state.entry_buf, vec![99, 10, 11]);
         assert_eq!(state.next_contiguous, 1002);
 
         state.data_payloads.insert(1002, vec![20, 21]);
         state.flush_contiguous();
-        assert_eq!(state.entry_buf, vec![10, 11, 20, 21]);
+        assert_eq!(state.entry_buf, vec![99, 10, 11, 20, 21]);
         assert_eq!(state.next_contiguous, 1003);
     }
 
@@ -1028,7 +1120,7 @@ mod tests {
     }
 
     fn make_coding_shred(variant: u8, num_data: u16, num_coding: u16, position: u16) -> Vec<u8> {
-        let mut buf = vec![0u8; SHRED_RS_SIZE];
+        let mut buf = vec![0u8; CODE_SHRED_PAYLOAD];
         buf[VARIANT_OFF] = variant;
         buf[CODE_NUM_DATA_OFF] = num_data as u8;
         buf[CODE_NUM_DATA_OFF + 1] = (num_data >> 8) as u8;
@@ -1073,61 +1165,91 @@ mod tests {
         assert!(parse_coding_header(&[0u8; CODE_HDR_END - 1]).is_none());
     }
 
+    /// A set with `n` data and `m` coding shards of `sz` bytes, encoded.
+    fn encoded_shards(n: usize, m: usize, sz: usize) -> Vec<Vec<u8>> {
+        let mut shards: Vec<Vec<u8>> = (0..n + m).map(|i| vec![i as u8 + 1; sz]).collect();
+        ReedSolomon::new(n, m).unwrap().encode(&mut shards).unwrap();
+        shards
+    }
+
     #[test]
     fn test_fec_set_reconstruct_recovers_missing_data() {
-        use reed_solomon_erasure::galois_8::ReedSolomon;
-
-        const N: usize = 2;
-        const M: usize = 2;
-        const SZ: usize = 64;
-
-        let original: Vec<Vec<u8>> = vec![vec![1u8; SZ], vec![2u8; SZ]];
-        let rs = ReedSolomon::new(N, M).unwrap();
-        let mut all_shards: Vec<Vec<u8>> = original.clone();
-        all_shards.push(vec![0u8; SZ]);
-        all_shards.push(vec![0u8; SZ]);
-        rs.encode(&mut all_shards).unwrap();
-
-        let mut fec = FecSet::new(N, M);
-        fec.shards.insert(0, all_shards[0].clone());
-        fec.shards.insert(2, all_shards[2].clone());
-        fec.shards.insert(3, all_shards[3].clone());
-
+        let all = encoded_shards(2, 2, 64);
+        let mut fec = FecSet {
+            layout: Some((2, 2)),
+            ..FecSet::default()
+        };
+        fec.data.insert(0, all[0].clone());
+        fec.coding.insert(1, all[3].clone());
         assert!(fec.ready_to_recover());
 
         let recovered = fec.reconstruct();
         assert_eq!(recovered.len(), 1);
-        let (idx, bytes) = &recovered[0];
+        let (idx, shred) = &recovered[0];
         assert_eq!(*idx, 1);
-        assert_eq!(bytes, &original[1]);
-    }
-
-    #[test]
-    fn test_fec_set_not_ready_when_insufficient_shards() {
-        let mut fec = FecSet::new(4, 4);
-        fec.shards.insert(4, vec![0u8; SHRED_RS_SIZE]);
+        // Zeroed signature, then the rebuilt shard.
+        assert_eq!(&shred[..SIGNATURE_SIZE], &[0u8; SIGNATURE_SIZE]);
+        assert_eq!(&shred[SIGNATURE_SIZE..], all[1].as_slice());
+        assert!(fec.done);
         assert!(!fec.ready_to_recover());
     }
 
     #[test]
-    fn test_fec_set_reconstruct_no_missing_data() {
-        use reed_solomon_erasure::galois_8::ReedSolomon;
+    fn test_fec_set_not_ready_when_insufficient_shards() {
+        let mut fec = FecSet::default();
+        fec.data.insert(0, vec![0u8; 8]);
+        fec.data.insert(1, vec![0u8; 8]);
+        // No coding shred yet, so the layout is unknown.
+        assert!(!fec.ready_to_recover());
+        fec.layout = Some((4, 4));
+        fec.coding.insert(0, vec![0u8; 8]);
+        assert!(!fec.ready_to_recover());
+        fec.coding.insert(1, vec![0u8; 8]);
+        assert!(fec.ready_to_recover());
+    }
 
-        const N: usize = 2;
-        const M: usize = 2;
-        const SZ: usize = 64;
+    #[test]
+    fn test_fec_set_with_all_data_frees_shards() {
+        let all = encoded_shards(2, 2, 64);
+        let mut fec = FecSet {
+            layout: Some((2, 2)),
+            ..FecSet::default()
+        };
+        fec.data.insert(0, all[0].clone());
+        fec.data.insert(1, all[1].clone());
+        fec.coding.insert(0, all[2].clone());
+        assert!(!fec.ready_to_recover());
+        assert!(fec.done);
+        assert!(fec.data.is_empty() && fec.coding.is_empty());
+    }
 
-        let rs = ReedSolomon::new(N, M).unwrap();
-        let mut all_shards: Vec<Vec<u8>> =
-            vec![vec![3u8; SZ], vec![4u8; SZ], vec![0u8; SZ], vec![0u8; SZ]];
-        rs.encode(&mut all_shards).unwrap();
-
-        let mut fec = FecSet::new(N, M);
-        for (i, s) in all_shards.iter().enumerate() {
-            fec.shards.insert(i, s.clone());
+    #[test]
+    fn test_erasure_shard_ranges_match_agave() {
+        // Chained data (0x9_) and coding (0x6_) shreds in one set give shards
+        // of the same length: data from byte 64, coding from byte 89, up to
+        // the chained root.
+        for (data_variant, code_variant, resigned) in [(0x96, 0x66, false), (0xb6, 0x76, true)] {
+            let data = vec![0u8; DATA_SHRED_PAYLOAD];
+            let mut d = data.clone();
+            d[VARIANT_OFF] = data_variant;
+            let mut c = vec![0u8; CODE_SHRED_PAYLOAD];
+            c[VARIANT_OFF] = code_variant;
+            let ds = erasure_shard(&d).unwrap();
+            let cs = erasure_shard(&c).unwrap();
+            let tail =
+                MERKLE_ROOT_SIZE + 6 * MERKLE_PROOF_ENTRY_SIZE + if resigned { 64 } else { 0 };
+            assert_eq!(ds.len(), DATA_SHRED_PAYLOAD - SIGNATURE_SIZE - tail);
+            assert_eq!(cs.len(), CODE_SHRED_PAYLOAD - CODE_HDR_END - tail);
+            assert_eq!(ds.len(), cs.len());
+            // The data shard starts at the variant byte.
+            assert_eq!(ds[0], data_variant);
         }
-        let recovered = fec.reconstruct();
-        assert!(recovered.is_empty());
+        let mut legacy = vec![0u8; CODE_SHRED_PAYLOAD];
+        legacy[VARIANT_OFF] = LEGACY_DATA_VARIANT;
+        assert!(erasure_shard(&legacy).is_none());
+        let mut short = vec![0u8; 500];
+        short[VARIANT_OFF] = 0x96;
+        assert!(erasure_shard(&short).is_none());
     }
 
     #[test]
@@ -1634,5 +1756,311 @@ mod tests {
         let (got, m) = run_decoder(shreds);
         assert_eq!(got, vec![1, 2]);
         assert_eq!(m.entries_skipped.load(Relaxed), 2);
+    }
+
+    // ── Real Agave shreds: FEC recovery under loss ─────────────────────────────
+
+    /// One slot of Merkle shreds (data and coding, three entry batches, the
+    /// first spanning two FEC sets) made by Agave's own `Shredder` 4.2.2.
+    /// Each record is a u16 LE length, then the shred. Transaction `n` has
+    /// `n` as u16 LE in the first two bytes of its signature.
+    const AGAVE_SLOT: &[u8] = include_bytes!("../testdata/agave_slot_1000.bin");
+
+    fn agave_shreds() -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut rest = AGAVE_SLOT;
+        while rest.len() >= 2 {
+            let len = u16::from_le_bytes([rest[0], rest[1]]) as usize;
+            out.push(rest[2..2 + len].to_vec());
+            rest = &rest[2 + len..];
+        }
+        out
+    }
+
+    /// Feed raw shreds through the decoder; return the transaction ids it
+    /// emitted, sorted, and the metrics.
+    fn decode_ids(shreds: &[Vec<u8>]) -> (Vec<u16>, Arc<SourceMetrics>) {
+        let (in_tx, in_rx) = crossbeam_channel::unbounded();
+        let (out_tx, out_rx) = crossbeam_channel::unbounded();
+        let metrics = SourceMetrics::new("test", false);
+        for data in shreds {
+            in_tx
+                .send(RawShred {
+                    data: data.clone(),
+                    recv_timestamp_ns: 1,
+                })
+                .unwrap();
+        }
+        drop(in_tx);
+        ShredDecoder::new(in_rx, out_tx, metrics.clone())
+            .run()
+            .unwrap();
+        let mut ids: Vec<u16> = out_rx
+            .try_iter()
+            .map(|d| {
+                let sig = <[u8; 64]>::from(d.transaction.signatures[0]);
+                u16::from_le_bytes([sig[0], sig[1]])
+            })
+            .collect();
+        ids.sort_unstable();
+        (ids, metrics)
+    }
+
+    struct TestRng(u64);
+    impl TestRng {
+        fn below(&mut self, n: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 33) % n
+        }
+    }
+
+    fn is_data(shred: &[u8]) -> bool {
+        parse_data_payload(shred).is_some()
+    }
+
+    #[test]
+    fn test_agave_slot_decodes_in_full() {
+        let shreds = agave_shreds();
+        assert!(shreds.iter().any(|s| is_data(s)));
+        assert!(shreds.iter().any(|s| parse_coding_header(s).is_some()));
+        let (ids, m) = decode_ids(&shreds);
+        let total = ids.len() as u16;
+        assert!(total > 100);
+        assert_eq!(ids, (1..=total).collect::<Vec<_>>());
+        assert_eq!(m.entries_skipped.load(Relaxed), 0);
+        assert_eq!(m.slots_complete.load(Relaxed), 1);
+    }
+
+    #[test]
+    fn test_agave_slot_lost_data_shreds_are_rebuilt() {
+        let shreds = agave_shreds();
+        let (all, _) = decode_ids(&shreds);
+        // Drop every data shred in turn: FEC must bring each one back.
+        for drop in (0..shreds.len()).filter(|&i| is_data(&shreds[i])) {
+            let mut lossy = shreds.clone();
+            lossy.remove(drop);
+            let (ids, m) = decode_ids(&lossy);
+            assert_eq!(ids, all, "dropped shred {drop}");
+            assert_eq!(m.fec_recovered_shreds.load(Relaxed), 1, "dropped {drop}");
+            assert_eq!(m.entries_skipped.load(Relaxed), 0, "dropped {drop}");
+        }
+    }
+
+    #[test]
+    fn test_agave_slot_coding_first_recovers_on_data_shred() {
+        // Each FEC set arrives coding shreds first, with one coding and one
+        // data shred lost. Recovery then becomes possible only when a data
+        // shred arrives, so the data path must start it.
+        let shreds = agave_shreds();
+        let (all, _) = decode_ids(&shreds);
+        let mut sets: Vec<u32> = shreds
+            .iter()
+            .map(|s| shred_slot_index(s).unwrap().2)
+            .collect();
+        sets.dedup();
+        let mut stream = Vec::new();
+        for fec in sets {
+            let in_set = |s: &&Vec<u8>| shred_slot_index(s).unwrap().2 == fec;
+            stream.extend(
+                shreds
+                    .iter()
+                    .filter(in_set)
+                    .filter(|s| !is_data(s))
+                    .skip(1)
+                    .cloned(),
+            );
+            stream.extend(
+                shreds
+                    .iter()
+                    .filter(in_set)
+                    .filter(|s| is_data(s))
+                    .enumerate()
+                    .filter(|(i, _)| *i != 5)
+                    .map(|(_, s)| s.clone()),
+            );
+        }
+        let (ids, m) = decode_ids(&stream);
+        assert_eq!(ids, all);
+        assert!(m.fec_recovered_shreds.load(Relaxed) >= 4);
+    }
+
+    #[test]
+    fn test_agave_slot_late_shred_after_recovery_counts_once() {
+        // Data shred 5 is late: FEC rebuilds it first, then the original
+        // arrives. It must count once.
+        let shreds = agave_shreds();
+        let (all, _) = decode_ids(&shreds);
+        let late = shreds
+            .iter()
+            .position(|s| is_data(s) && shred_slot_index(s).unwrap().1 == 5)
+            .unwrap();
+        let mut stream = shreds.clone();
+        let shred = stream.remove(late);
+        stream.push(shred);
+        let (ids, m) = decode_ids(&stream);
+        assert_eq!(ids, all);
+        assert_eq!(m.fec_recovered_shreds.load(Relaxed), 1);
+        assert_eq!(m.coverage_shreds_seen.load(Relaxed), 128);
+    }
+
+    #[test]
+    fn test_agave_slot_corrupt_coding_shards_are_not_trusted() {
+        // Data shred 5 is lost and every coding shred of its set has a
+        // corrupted byte in the column that rebuilds the slot field. The
+        // rebuilt shred then names the wrong slot and must be dropped.
+        let mut stream = agave_shreds();
+        stream.retain(|s| !(is_data(s) && shred_slot_index(s).unwrap().1 == 5));
+        for s in stream.iter_mut() {
+            if parse_coding_header(s).is_some() && shred_slot_index(s).unwrap().2 == 0 {
+                // Shard byte 1 is the first slot byte (offset 65) of a data shred.
+                s[CODE_HDR_END + SLOT_OFF - SIGNATURE_SIZE] ^= 0xff;
+            }
+        }
+        let (_, m) = decode_ids(&stream);
+        assert_eq!(m.fec_recovered_shreds.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn test_agave_slot_random_loss_and_reordering() {
+        let shreds = agave_shreds();
+        let (all, _) = decode_ids(&shreds);
+        let mut rng = TestRng(7);
+        for trial in 0..60 {
+            // 1-5% loss, and shreds swap places with near neighbours, so
+            // coding shreds can arrive before the data shreds of their set.
+            let loss = 1 + rng.below(5);
+            let mut lossy: Vec<Vec<u8>> = shreds
+                .iter()
+                .filter(|_| rng.below(100) >= loss)
+                .cloned()
+                .collect();
+            for _ in 0..lossy.len() / 4 {
+                let a = rng.below(lossy.len() as u64 - 8) as usize;
+                lossy.swap(a, a + 1 + rng.below(7) as usize);
+            }
+            let (ids, m) = decode_ids(&lossy);
+            assert_eq!(ids, all, "trial {trial}");
+            assert_eq!(m.entries_skipped.load(Relaxed), 0, "trial {trial}");
+        }
+    }
+
+    /// Every FEC set in `shreds` holds enough shards to rebuild its data.
+    fn every_set_recoverable(shreds: &[Vec<u8>], all: &[Vec<u8>]) -> bool {
+        let mut num_data: HashMap<u32, usize> = HashMap::new();
+        for s in all {
+            if let (Some(c), Some((_, _, fec))) = (parse_coding_header(s), shred_slot_index(s)) {
+                num_data.insert(fec, c.num_data as usize);
+            }
+        }
+        let mut have: HashMap<u32, usize> = HashMap::new();
+        for s in shreds {
+            *have.entry(shred_slot_index(s).unwrap().2).or_default() += 1;
+        }
+        have.iter().all(|(fec, n)| *n >= num_data[fec])
+    }
+
+    #[test]
+    fn test_agave_slot_mid_block_join_with_loss() {
+        // Join the stream part-way through, then lose a few shreds. While
+        // every FEC set can still be rebuilt, every entry batch that starts
+        // after the first data shred we receive must be read in full.
+        // Before FEC worked, one lost shred before the first batch end cost
+        // the whole slot.
+        let shreds = agave_shreds();
+        let (all, _) = decode_ids(&shreds);
+        let data: Vec<&Vec<u8>> = shreds.iter().filter(|s| is_data(s)).collect();
+        let index_of = |s: &[u8]| shred_slot_index(s).unwrap().1;
+        let batch_starts: Vec<u32> = std::iter::once(0)
+            .chain(
+                data.iter()
+                    .filter(|s| ends_entry_batch(s))
+                    .map(|s| index_of(s) + 1),
+            )
+            .collect();
+
+        let mut rng = TestRng(11);
+        let mut checked = 0;
+        for join in (1..shreds.len() - 40).step_by(5) {
+            let joined = &shreds[join..];
+            for trial in 0..3 {
+                let lossy: Vec<Vec<u8>> = joined
+                    .iter()
+                    .filter(|_| rng.below(100) >= 3)
+                    .cloned()
+                    .collect();
+                let (ids, _) = decode_ids(&lossy);
+                assert!(ids.iter().all(|i| all.contains(i)), "join {join}");
+                if !every_set_recoverable(&lossy, &shreds) {
+                    continue;
+                }
+                // The first batch may have started before the first data
+                // shred we received; every batch after that must be whole.
+                let Some(earliest) = lossy
+                    .iter()
+                    .filter(|s| is_data(s))
+                    .map(|s| index_of(s))
+                    .min()
+                else {
+                    continue;
+                };
+                let Some(&from) = batch_starts.iter().find(|&&b| b >= earliest) else {
+                    continue;
+                };
+                let tail: Vec<Vec<u8>> = data
+                    .iter()
+                    .filter(|s| index_of(s) >= from)
+                    .map(|s| s.to_vec())
+                    .collect();
+                let (must_have, _) = decode_ids(&tail);
+                assert!(
+                    must_have.iter().all(|i| ids.contains(i)),
+                    "join {join} trial {trial}: missing {:?}",
+                    must_have
+                        .iter()
+                        .filter(|i| !ids.contains(i))
+                        .collect::<Vec<_>>()
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 60, "only {checked} trials could be checked");
+    }
+
+    #[test]
+    fn test_agave_slot_corrupted_shreds_do_not_panic() {
+        // Corrupt random bytes of real shreds, mostly in the headers, and
+        // feed them through with loss and reordering.
+        let shreds = agave_shreds();
+        let mut rng = TestRng(23);
+        for _ in 0..40 {
+            let mut stream: Vec<Vec<u8>> = shreds
+                .iter()
+                .filter(|_| rng.below(100) >= 5)
+                .cloned()
+                .collect();
+            for _ in 0..1 + rng.below(20) {
+                let i = rng.below(stream.len() as u64) as usize;
+                let s = &mut stream[i];
+                let at = if rng.below(4) == 0 {
+                    rng.below(s.len() as u64) as usize
+                } else {
+                    64 + rng.below(32) as usize
+                };
+                s[at] = rng.below(256) as u8;
+                if rng.below(10) == 0 {
+                    let keep = rng.below(s.len() as u64) as usize;
+                    s.truncate(keep);
+                }
+            }
+            for _ in 0..stream.len() / 8 {
+                let a = rng.below(stream.len() as u64) as usize;
+                let b = rng.below(stream.len() as u64) as usize;
+                stream.swap(a, b);
+            }
+            decode_ids(&stream);
+        }
     }
 }
