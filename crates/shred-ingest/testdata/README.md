@@ -1,7 +1,8 @@
 # Test data
 
 `agave_slot_1000.bin` is one slot of real Merkle shreds (128 data, 128 coding,
-168 transactions, three entry batches) made by Agave's own `Shredder` from
+168 transactions, three entry batches: a small first one that fits in one
+FEC set, one spanning two FEC sets, and the last one) made by Agave's own `Shredder` from
 `solana-ledger` 4.2.2. The decoder tests use it to check FEC recovery against
 the real shred layout.
 
@@ -95,8 +96,8 @@ fn main() {
             Entry { num_hashes: 1 + i as u64, hash: Hash::new_from_array([i as u8; 32]), transactions }
         }).collect()
     };
-    // Batch sizes: one spanning two FEC sets, one small, one last in slot.
-    let batches = [(28, 5, false), (2, 2, false), (12, 4, true)];
+    // Batch sizes: a small first batch (one FEC set), one spanning two FEC sets, one last in slot.
+    let batches = [(2, 2, false), (28, 5, false), (12, 4, true)];
     let (mut next_data, mut next_code) = (0u32, 0u32);
     let mut root = Hash::new_from_array([1; 32]);
     let mut file = std::fs::File::create(out).unwrap();

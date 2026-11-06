@@ -120,6 +120,8 @@ pub struct SourceMetrics {
     pub coverage_shreds_expected: AtomicU64,
 
     // FEC recovery
+    /// Data shreds rebuilt by FEC whose original never arrived. It goes down
+    /// again when an original shows up after its rebuild.
     pub fec_recovered_shreds: AtomicU64,
 
     // Tx flow
@@ -222,6 +224,15 @@ impl SourceMetrics {
 
     /// Record a per-slot decode outcome from the shred decoder.
     /// The log is bounded to SLOT_LOG_CAP entries; the oldest entry is dropped when full.
+    /// Lower the logged FEC-recovered count of `slot` by one: the original
+    /// of a rebuilt shred arrived after the slot was logged.
+    pub fn unrecover_logged(&self, slot: u64) {
+        let mut log = self.slot_log.lock().unwrap();
+        if let Some(s) = log.iter_mut().rev().find(|s| s.slot == slot) {
+            s.fec_recovered = s.fec_recovered.saturating_sub(1);
+        }
+    }
+
     pub fn push_slot_stats(&self, stats: SlotStats) {
         let mut log = self.slot_log.lock().unwrap();
         if log.len() >= SLOT_LOG_CAP {
