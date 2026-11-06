@@ -100,6 +100,13 @@ fn render(snap: &MetricsSnapshot) -> String {
             s.shreds_invalid as f64,
             "Malformed/unknown packets rejected before decoder",
         );
+        gauge(
+            &mut out,
+            "shredtop_entries_skipped_total",
+            &[("source", name)],
+            s.entries_skipped as f64,
+            "Entries skipped because the decoder could not read them",
+        );
         gauge(&mut out, "shredtop_backfill_total",
             &[("source", name)], s.backfill_count as f64,
             "Transactions where counterpart gRPC source delivered stale/backfilled data (lead > 2000ms)");

@@ -120,12 +120,17 @@ pub struct SourceMetrics {
     pub coverage_shreds_expected: AtomicU64,
 
     // FEC recovery
+    /// Data shreds rebuilt by FEC whose original never arrived. It goes down
+    /// again when an original shows up after its rebuild.
     pub fec_recovered_shreds: AtomicU64,
 
     // Tx flow
     pub txs_decoded: AtomicU64,
     /// Decoded transactions dropped because the decoder→relay channel was full.
     pub txs_dropped: AtomicU64,
+    /// Entries (or whole entry batches) skipped because they could not be read.
+    /// A rise here means the decoder met a format it does not understand.
+    pub entries_skipped: AtomicU64,
     pub txs_emitted: AtomicU64,
     /// Won the fan-in dedup race (first arrival)
     pub txs_first: AtomicU64,
@@ -169,6 +174,7 @@ pub struct SourceMetricsSnapshot {
     pub fec_recovered_shreds: u64,
     pub txs_decoded: u64,
     pub txs_dropped: u64,
+    pub entries_skipped: u64,
     pub txs_emitted: u64,
     pub txs_first: u64,
     pub txs_duplicate: u64,
@@ -203,6 +209,7 @@ impl SourceMetrics {
             fec_recovered_shreds: AtomicU64::new(0),
             txs_decoded: AtomicU64::new(0),
             txs_dropped: AtomicU64::new(0),
+            entries_skipped: AtomicU64::new(0),
             txs_emitted: AtomicU64::new(0),
             txs_first: AtomicU64::new(0),
             txs_duplicate: AtomicU64::new(0),
@@ -217,6 +224,15 @@ impl SourceMetrics {
 
     /// Record a per-slot decode outcome from the shred decoder.
     /// The log is bounded to SLOT_LOG_CAP entries; the oldest entry is dropped when full.
+    /// Lower the logged FEC-recovered count of `slot` by one: the original
+    /// of a rebuilt shred arrived after the slot was logged.
+    pub fn unrecover_logged(&self, slot: u64) {
+        let mut log = self.slot_log.lock().unwrap();
+        if let Some(s) = log.iter_mut().rev().find(|s| s.slot == slot) {
+            s.fec_recovered = s.fec_recovered.saturating_sub(1);
+        }
+    }
+
     pub fn push_slot_stats(&self, stats: SlotStats) {
         let mut log = self.slot_log.lock().unwrap();
         if log.len() >= SLOT_LOG_CAP {
@@ -319,6 +335,7 @@ impl SourceMetrics {
             fec_recovered_shreds: self.fec_recovered_shreds.load(Relaxed),
             txs_decoded: self.txs_decoded.load(Relaxed),
             txs_dropped: self.txs_dropped.load(Relaxed),
+            entries_skipped: self.entries_skipped.load(Relaxed),
             txs_emitted: self.txs_emitted.load(Relaxed),
             txs_first: self.txs_first.load(Relaxed),
             txs_duplicate: self.txs_duplicate.load(Relaxed),

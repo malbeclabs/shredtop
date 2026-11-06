@@ -40,6 +40,8 @@ pub struct SourceReport {
     pub coverage_pct: Option<f64>,
     pub fec_recovered_shreds: u64,
     pub txs_decoded: u64,
+    /// Entries skipped because they could not be read.
+    pub entries_skipped: u64,
     pub txs_per_sec: f64,
     pub win_rate_pct: Option<f64>,
     pub lead_time_mean_us: Option<f64>,
@@ -307,6 +309,7 @@ fn source_report(s: &SourceMetricsSnapshot, elapsed_secs: f64) -> SourceReport {
         coverage_pct,
         fec_recovered_shreds: s.fec_recovered_shreds,
         txs_decoded: s.txs_decoded,
+        entries_skipped: s.entries_skipped,
         txs_per_sec: s.txs_decoded as f64 / elapsed_secs,
         win_rate_pct,
         lead_time_mean_us: lead_mean,
